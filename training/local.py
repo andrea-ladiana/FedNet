@@ -3,8 +3,12 @@ import torch.nn.functional as F
 import torch.optim as optim
 from config.settings import DEVICE
 from utils.exceptions import ModelError
+from utils.validation import (
+    validate_model, validate_dataloader, validate_positive_int,
+    validate_learning_rate
+)
 
-def train_local_model(model, dataloader, epochs=1):
+def train_local_model(model, dataloader, epochs=1, learning_rate=0.01):
     """
     Allena il modello locale su un dataloader di un singolo client.
     
@@ -12,27 +16,35 @@ def train_local_model(model, dataloader, epochs=1):
         model: Modello da allenare
         dataloader: DataLoader con i dati di training
         epochs: Numero di epoche di training
+        learning_rate: Learning rate per l'ottimizzatore
         
     Raises:
         ModelError: Se ci sono problemi durante il training
     """
     try:
-        if not isinstance(model, torch.nn.Module):
-            raise ModelError("Il modello deve essere un'istanza di torch.nn.Module")
-            
-        if not isinstance(dataloader, torch.utils.data.DataLoader):
-            raise ModelError("Il dataloader deve essere un'istanza di torch.utils.data.DataLoader")
-            
-        if epochs < 1:
-            raise ModelError("Il numero di epoche deve essere positivo")
+        # Validazione input
+        validate_model(model, "model")
+        validate_dataloader(dataloader, "dataloader")
+        validate_positive_int(epochs, "epochs")
+        validate_learning_rate(learning_rate)
             
         model.train()
-        optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+        optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
         
         for epoch in range(epochs):
             try:
                 for batch_idx, (images, labels) in enumerate(dataloader):
                     try:
+                        # Validazione batch
+                        if not isinstance(images, torch.Tensor) or not isinstance(labels, torch.Tensor):
+                            raise ModelError(f"Batch {batch_idx} non contiene tensori validi")
+                            
+                        if images.size(0) == 0 or labels.size(0) == 0:
+                            raise ModelError(f"Batch {batch_idx} vuoto")
+                            
+                        if images.size(0) != labels.size(0):
+                            raise ModelError(f"Dimensioni incompatibili nel batch {batch_idx}")
+                            
                         images, labels = images.to(DEVICE), labels.to(DEVICE)
                         optimizer.zero_grad()
                         outputs = model(images)

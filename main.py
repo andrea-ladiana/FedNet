@@ -21,6 +21,10 @@ from utils.exceptions import (
     FedNetError, ModelError, DataError, AggregationError,
     ClientError, RLError
 )
+from utils.validation import (
+    validate_model, validate_dataloader, validate_positive_int,
+    validate_learning_rate
+)
 
 def main_federated_rl_example():
     """
@@ -189,6 +193,77 @@ def main_federated_rl_example():
     finally:
         # Chiudiamo il logger
         logger.close()
+
+def train_federated(model, train_dataloaders, test_dataloader, 
+                   num_rounds=10, local_epochs=5, learning_rate=0.01):
+    """
+    Esegue il training federato del modello.
+    
+    Args:
+        model: Modello da allenare
+        train_dataloaders: Lista di DataLoader per il training dei client
+        test_dataloader: DataLoader per la valutazione
+        num_rounds: Numero di round di training federato
+        local_epochs: Numero di epoche per il training locale
+        learning_rate: Learning rate per il training locale
+        
+    Raises:
+        ModelError: Se ci sono problemi durante il training federato
+    """
+    try:
+        # Validazione input
+        validate_model(model, "model")
+        validate_positive_int(num_rounds, "num_rounds")
+        validate_positive_int(local_epochs, "local_epochs")
+        validate_learning_rate(learning_rate)
+        
+        if not train_dataloaders:
+            raise ModelError("Lista dei dataloader di training vuota")
+            
+        for i, dataloader in enumerate(train_dataloaders):
+            validate_dataloader(dataloader, f"train_dataloader_{i}")
+            
+        validate_dataloader(test_dataloader, "test_dataloader")
+        
+        # Training federato
+        for round_idx in range(num_rounds):
+            try:
+                print(f"\nRound {round_idx + 1}/{num_rounds}")
+                
+                # Training locale
+                client_models = []
+                for client_idx, dataloader in enumerate(train_dataloaders):
+                    try:
+                        client_model = train_local_model(
+                            model, dataloader, local_epochs, learning_rate
+                        )
+                        client_models.append(client_model)
+                    except Exception as e:
+                        raise ModelError(f"Errore nel training del client {client_idx}: {str(e)}")
+                        
+                # Aggregazione
+                try:
+                    aggregator = FedAvgAggregator(model)
+                    aggregator.aggregate(client_models)
+                except Exception as e:
+                    raise ModelError(f"Errore nell'aggregazione: {str(e)}")
+                    
+                # Valutazione
+                try:
+                    test_loss, test_acc = evaluate_model(model, test_dataloader)
+                    print(f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.2f}%")
+                except Exception as e:
+                    raise ModelError(f"Errore nella valutazione: {str(e)}")
+                    
+            except ModelError:
+                raise
+            except Exception as e:
+                raise ModelError(f"Errore nel round {round_idx}: {str(e)}")
+                
+    except ModelError:
+        raise
+    except Exception as e:
+        raise ModelError(f"Errore imprevisto nel training federato: {str(e)}")
 
 if __name__ == "__main__":
     main_federated_rl_example()

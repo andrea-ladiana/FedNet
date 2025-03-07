@@ -3,6 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from config.settings import CLIENT_FEATURE_DIM, NUM_CLIENTS
 from models.base import BaseModel
+from utils.exceptions import ModelError
+from utils.validation import (
+    validate_model, validate_weights, validate_client_scores
+)
 
 class ValueNet(BaseModel):
     """
@@ -89,3 +93,74 @@ class AggregatorNet(BaseModel):
         client_score = client_score.squeeze(0)  # (num_clients,)
         
         return alpha_params, exclude_flag, client_score 
+
+class FedAvgAggregator:
+    def __init__(self, model):
+        """
+        Inizializza l'aggregatore FedAvg.
+        
+        Args:
+            model: Modello base da aggregare
+            
+        Raises:
+            ModelError: Se il modello non è valido
+        """
+        try:
+            validate_model(model, "model")
+            self.model = model
+        except Exception as e:
+            raise ModelError(f"Errore nell'inizializzazione dell'aggregatore: {str(e)}")
+            
+    def aggregate(self, client_models, weights=None, client_scores=None):
+        """
+        Aggrega i modelli dei client usando FedAvg.
+        
+        Args:
+            client_models: Lista di modelli dei client
+            weights: Pesi opzionali per l'aggregazione ponderata
+            client_scores: Punteggi dei client per l'aggregazione basata su performance
+            
+        Raises:
+            ModelError: Se ci sono problemi durante l'aggregazione
+        """
+        try:
+            # Validazione input
+            if not client_models:
+                raise ModelError("Lista dei modelli client vuota")
+                
+            for i, model in enumerate(client_models):
+                validate_model(model, f"client_model_{i}")
+                
+            if weights is not None:
+                validate_weights(weights, len(client_models))
+                
+            if client_scores is not None:
+                validate_client_scores(client_scores, len(client_models))
+                
+            # Aggregazione
+            state_dict = self.model.state_dict()
+            for key in state_dict.keys():
+                state_dict[key] = torch.zeros_like(state_dict[key])
+                
+            total_weight = 0
+            for i, model in enumerate(client_models):
+                if weights is not None:
+                    weight = weights[i]
+                elif client_scores is not None:
+                    weight = client_scores[i]
+                else:
+                    weight = 1.0 / len(client_models)
+                    
+                total_weight += weight
+                for key in state_dict.keys():
+                    state_dict[key] += weight * model.state_dict()[key]
+                    
+            for key in state_dict.keys():
+                state_dict[key] /= total_weight
+                
+            self.model.load_state_dict(state_dict)
+            
+        except ModelError:
+            raise
+        except Exception as e:
+            raise ModelError(f"Errore durante l'aggregazione: {str(e)}") 
