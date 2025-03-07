@@ -132,3 +132,51 @@ Le configurazioni principali si trovano in `config/settings.py`:
 3. Committa le tue modifiche (`git commit -m 'Add some AmazingFeature'`)
 4. Pusha sul branch (`git push origin feature/AmazingFeature`)
 5. Apri una Pull Request 
+
+## Implementazione Parallela con Flower
+
+FedNet fornisce anche un'implementazione parallela utilizzando il framework Flower, che permette di eseguire il training federato in modo distribuito su più macchine.
+
+### Struttura Flower
+
+```
+FedNet/
+├── flower/
+│   ├── __init__.py
+│   ├── client.py        # Implementazione del client Flower
+│   └── strategy.py      # Strategia di aggregazione RL per Flower
+└── flower_main.py       # Entry point per l'implementazione Flower
+```
+
+### Utilizzo dell'Implementazione Flower
+
+Per eseguire il training federato in modo distribuito:
+
+1. Avvia il server Flower:
+```bash
+python flower_main.py
+```
+
+2. In un altro terminale, avvia i client (uno per ogni client desiderato):
+```bash
+python -m flwr.client --server-address="[::]:8080"
+```
+
+### Differenze tra le Implementazioni
+
+- **Implementazione Standard** (`main.py`):
+  - Esegue tutto in un unico processo
+  - Ideale per test e sviluppo
+  - Più facile da debuggare
+
+- **Implementazione Flower** (`flower_main.py`):
+  - Esegue il training in modo distribuito
+  - Supporta client reali su macchine diverse
+  - Più scalabile e adatta a scenari di produzione
+
+### Configurazione Flower
+
+La configurazione di Flower si trova in `flower_main.py`:
+- Numero di round
+- Frazione di client per il training
+- Strategia di aggregazione RL personalizzata 
