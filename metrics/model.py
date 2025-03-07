@@ -20,6 +20,7 @@ def compute_model_performance():
     """
     return random.random()  # Dummy: restituisce un valore casuale tra 0 e 1
 
+#TODO: da cambiare
 def compute_model_scores():
     """
     Calcola gli score per i modelli combinando le varie metriche.

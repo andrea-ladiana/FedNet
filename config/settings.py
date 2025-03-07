@@ -21,7 +21,7 @@ LR_AGGREGATOR = 1e-3
 # Batch size per MNIST
 BATCH_SIZE = 64
 
-# Parametri per il calcolo degli score
+# Parametri per il calcolo degli score (da cambiare)
 SCORE_WEIGHTS = {
     'similarity': 0.3,      # Similarità del modello
     'contribution': 0.2,    # Contributo del modello

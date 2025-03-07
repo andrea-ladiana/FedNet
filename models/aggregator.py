@@ -111,14 +111,13 @@ class FedAvgAggregator:
         except Exception as e:
             raise ModelError(f"Errore nell'inizializzazione dell'aggregatore: {str(e)}")
             
-    def aggregate(self, client_models, weights=None, client_scores=None):
+    def aggregate(self, client_models, weights=None):
         """
         Aggrega i modelli dei client usando FedAvg.
         
         Args:
             client_models: Lista di modelli dei client
             weights: Pesi opzionali per l'aggregazione ponderata
-            client_scores: Punteggi dei client per l'aggregazione basata su performance
             
         Raises:
             ModelError: Se ci sono problemi durante l'aggregazione
@@ -134,9 +133,6 @@ class FedAvgAggregator:
             if weights is not None:
                 validate_weights(weights, len(client_models))
                 
-            if client_scores is not None:
-                validate_client_scores(client_scores, len(client_models))
-                
             # Aggregazione
             state_dict = self.model.state_dict()
             for key in state_dict.keys():
@@ -146,8 +142,6 @@ class FedAvgAggregator:
             for i, model in enumerate(client_models):
                 if weights is not None:
                     weight = weights[i]
-                elif client_scores is not None:
-                    weight = client_scores[i]
                 else:
                     weight = 1.0 / len(client_models)
                     

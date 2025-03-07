@@ -19,7 +19,7 @@ def validate_tensor(tensor: torch.Tensor, name: str, shape: tuple = None, dtype:
     Raises:
         FedNetError: Se la validazione fallisce
     """
-    if not isinstance(tensor, torch.Tensor):
+    if not hasattr(tensor, 'shape') or not hasattr(tensor, 'dtype'):
         raise FedNetError(f"{name} deve essere un torch.Tensor")
         
     if shape is not None and tensor.shape != shape:
@@ -39,10 +39,10 @@ def validate_model(model: torch.nn.Module, name: str) -> None:
     Raises:
         FedNetError: Se la validazione fallisce
     """
-    if not isinstance(model, torch.nn.Module):
+    if not hasattr(model, 'forward'):
         raise FedNetError(f"{name} deve essere un'istanza di torch.nn.Module")
         
-    if not hasattr(model, 'forward'):
+    if not callable(getattr(model, 'forward')):
         raise FedNetError(f"{name} deve avere un metodo forward")
 
 def validate_dataloader(dataloader: torch.utils.data.DataLoader, name: str) -> None:
@@ -56,7 +56,7 @@ def validate_dataloader(dataloader: torch.utils.data.DataLoader, name: str) -> N
     Raises:
         FedNetError: Se la validazione fallisce
     """
-    if not isinstance(dataloader, torch.utils.data.DataLoader):
+    if not hasattr(dataloader, 'batch_size'):
         raise FedNetError(f"{name} deve essere un'istanza di torch.utils.data.DataLoader")
         
     if dataloader.batch_size <= 0:
@@ -131,7 +131,9 @@ def validate_learning_rate(lr: float, name: str = "learning rate") -> None:
     Raises:
         FedNetError: Se la validazione fallisce
     """
-    if not isinstance(lr, (int, float)):
+    try:
+        lr = float(lr)
+    except (TypeError, ValueError):
         raise FedNetError(f"{name} deve essere un numero")
         
     if lr <= 0:

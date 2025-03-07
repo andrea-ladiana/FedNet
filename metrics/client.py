@@ -22,7 +22,7 @@ def compute_data_quality():
 
 def compute_client_scores():
     """
-    Calcola gli score per tutti i client combinando le varie metriche.
+    Calcola gli score per tutti i client combinando le varie metriche. (da cambiare)
     Ritorna un tensore di dimensione (num_clients,) con gli score normalizzati.
     """
     scores = torch.zeros(NUM_CLIENTS, device=DEVICE)

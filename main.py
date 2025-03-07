@@ -8,10 +8,9 @@ from config.settings import (
     LR_AGGREGATOR, CLIENT_FEATURE_DIM
 )
 from models.local import LocalMNISTModel
-from models.aggregator import AggregatorNet, ValueNet
+from models.aggregator import AggregatorNet, ValueNet, FedAvgAggregator
 from training.local import train_local_model
 from training.evaluation import evaluate_model
-from training.aggregation import aggregate_models
 from utils.data import split_dataset_mnist, get_validation_loader
 from rl.rl import rl_update_step, supervised_update_step
 from utils.logger import FederatedLogger
@@ -23,7 +22,7 @@ from utils.exceptions import (
 )
 from utils.validation import (
     validate_model, validate_dataloader, validate_positive_int,
-    validate_learning_rate
+    validate_learning_rate, validate_weights
 )
 
 def main_federated_rl_example():
@@ -52,8 +51,9 @@ def main_federated_rl_example():
         try:
             print("Inizializzazione dei modelli locali...")
             local_models = [LocalMNISTModel().to(DEVICE) for _ in range(NUM_CLIENTS)]
+            global_model = LocalMNISTModel().to(DEVICE)  # Modello globale
         except Exception as e:
-            raise ModelError(f"Errore nell'inizializzazione dei modelli locali: {str(e)}")
+            raise ModelError(f"Errore nell'inizializzazione dei modelli: {str(e)}")
         
         # 3) Inizializziamo la rete di aggregazione e la value net
         try:
@@ -67,14 +67,20 @@ def main_federated_rl_example():
         except Exception as e:
             raise ModelError(f"Errore nell'inizializzazione delle reti di aggregazione: {str(e)}")
         
-        # 4) Inizializziamo ground truth fittizia per exclude_flag
+        # 4) Inizializziamo l'aggregatore
+        try:
+            aggregator = FedAvgAggregator(global_model)
+        except Exception as e:
+            raise ModelError(f"Errore nell'inizializzazione dell'aggregatore: {str(e)}")
+        
+        # 5) Inizializziamo ground truth fittizia per exclude_flag
         exclude_true = torch.randint(0, 2, (NUM_CLIENTS,)).float().to(DEVICE)
         
-        # 5) Lista per memorizzare la storia dei reward e degli stati precedenti
+        # 6) Lista per memorizzare la storia dei reward e degli stati precedenti
         reward_history = []
         prev_state_dicts = None
         
-        # 6) Loop sui round federati
+        # 7) Loop sui round federati
         for round_idx in range(GLOBAL_ROUNDS):
             print(f"\n=== ROUND {round_idx+1} ===")
             
@@ -125,7 +131,7 @@ def main_federated_rl_example():
                 
                 # Aggreghiamo i modelli usando i pesi
                 try:
-                    global_model = aggregate_models(local_models, w)
+                    aggregator.aggregate(local_models, w)
                 except AggregationError as e:
                     print(f"Errore nell'aggregazione dei modelli: {str(e)}")
                     continue
@@ -195,7 +201,8 @@ def main_federated_rl_example():
         logger.close()
 
 def train_federated(model, train_dataloaders, test_dataloader, 
-                   num_rounds=10, local_epochs=5, learning_rate=0.01):
+                   num_rounds=10, local_epochs=5, learning_rate=0.01,
+                   weights=None):
     """
     Esegue il training federato del modello.
     
@@ -206,6 +213,7 @@ def train_federated(model, train_dataloaders, test_dataloader,
         num_rounds: Numero di round di training federato
         local_epochs: Numero di epoche per il training locale
         learning_rate: Learning rate per il training locale
+        weights: Pesi opzionali per l'aggregazione ponderata
         
     Raises:
         ModelError: Se ci sono problemi durante il training federato
@@ -225,6 +233,12 @@ def train_federated(model, train_dataloaders, test_dataloader,
             
         validate_dataloader(test_dataloader, "test_dataloader")
         
+        if weights is not None:
+            validate_weights(weights, len(train_dataloaders))
+        
+        # Inizializziamo l'aggregatore
+        aggregator = FedAvgAggregator(model)
+        
         # Training federato
         for round_idx in range(num_rounds):
             try:
@@ -243,8 +257,7 @@ def train_federated(model, train_dataloaders, test_dataloader,
                         
                 # Aggregazione
                 try:
-                    aggregator = FedAvgAggregator(model)
-                    aggregator.aggregate(client_models)
+                    aggregator.aggregate(client_models, weights)
                 except Exception as e:
                     raise ModelError(f"Errore nell'aggregazione: {str(e)}")
                     
