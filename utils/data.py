@@ -5,101 +5,135 @@ import random
 import os
 from config.settings import NUM_CLIENTS, BATCH_SIZE, DATA_DIR, MNIST_TRAIN_SIZE, MNIST_TEST_SIZE
 from utils.exceptions import DataError
+from torch.utils.data import DataLoader, random_split
 
-def split_dataset_mnist(num_clients=NUM_CLIENTS):
+def ensure_mnist_dataset(data_dir='data'):
     """
-    Semplice split di MNIST train set in 'num_clients' parti (non i.i.d. ma casuale).
-    Restituisce una lista di DataLoader.
+    Assicura che il dataset MNIST sia presente nella cartella data.
+    Se non lo è, lo scarica.
     
     Args:
-        num_clients: Numero di client per cui dividere il dataset
+        data_dir: Directory dove salvare il dataset
         
     Returns:
-        Lista di DataLoader, uno per ogni client
-        
-    Raises:
-        DataError: Se ci sono problemi nel caricamento o nella divisione dei dati
+        str: Percorso della directory del dataset
     """
     try:
-        # Verifica che la directory dei dati esista
-        os.makedirs(DATA_DIR, exist_ok=True)
+        # Creiamo la directory se non esiste
+        os.makedirs(data_dir, exist_ok=True)
         
-        transform = transforms.Compose([transforms.ToTensor()])
-        try:
-            full_train = torchvision.datasets.MNIST(
-                root=DATA_DIR, 
-                train=True, 
-                download=True, 
-                transform=transform
+        # Verifichiamo se il dataset esiste già
+        mnist_path = os.path.join(data_dir, 'MNIST')
+        if not os.path.exists(mnist_path):
+            print("Download del dataset MNIST...")
+            torchvision.datasets.MNIST(
+                root=data_dir,
+                train=True,
+                download=True,
+                transform=transforms.ToTensor()
             )
-        except Exception as e:
-            raise DataError(f"Errore nel caricamento del dataset MNIST: {str(e)}")
-        
-        # Verifica che ci siano abbastanza dati per tutti i client
-        if len(full_train) < num_clients:
-            raise DataError(f"Dataset troppo piccolo per {num_clients} client")
-        
-        # Shuffle e suddividi
-        indices = list(range(len(full_train)))
-        random.shuffle(indices)
-        split_size = len(full_train) // num_clients
-        
-        if split_size == 0:
-            raise DataError("Dimensione split troppo piccola")
+            print("Download completato!")
             
-        loaders = []
-        for i in range(num_clients):
-            try:
-                subset_indices = indices[i*split_size : (i+1)*split_size]
-                subset = torch.utils.data.Subset(full_train, subset_indices)
-                loader = torch.utils.data.DataLoader(
-                    subset, 
-                    batch_size=BATCH_SIZE, 
-                    shuffle=True,
-                    num_workers=0  # Per evitare problemi di multiprocessing
-                )
-                loaders.append(loader)
-            except Exception as e:
-                raise DataError(f"Errore nella creazione del DataLoader per il client {i}: {str(e)}")
+        return mnist_path
         
-        return loaders
-        
-    except DataError:
-        raise
     except Exception as e:
-        raise DataError(f"Errore imprevisto nel caricamento dei dati: {str(e)}")
+        raise DataError(f"Errore nel download del dataset MNIST: {str(e)}")
 
-def get_validation_loader():
+def split_dataset_mnist(num_clients, batch_size=32, data_dir='data'):
     """
-    Restituisce il DataLoader per il set di validazione MNIST.
+    Divide il dataset MNIST tra i client.
     
+    Args:
+        num_clients: Numero di client
+        batch_size: Dimensione del batch per ogni client
+        data_dir: Directory del dataset
+        
     Returns:
-        DataLoader per il set di validazione
+        list: Lista di DataLoader, uno per ogni client
         
     Raises:
-        DataError: Se ci sono problemi nel caricamento dei dati di validazione
+        DataError: Se ci sono problemi nel caricamento dei dati
     """
     try:
-        transform = transforms.Compose([transforms.ToTensor()])
-        try:
-            val_set = torchvision.datasets.MNIST(
-                root=DATA_DIR, 
-                train=False, 
-                download=True, 
-                transform=transform
-            )
-        except Exception as e:
-            raise DataError(f"Errore nel caricamento del dataset di validazione MNIST: {str(e)}")
-            
-        val_loader = torch.utils.data.DataLoader(
-            val_set, 
-            batch_size=BATCH_SIZE, 
-            shuffle=False,
-            num_workers=0  # Per evitare problemi di multiprocessing
+        # Assicuriamoci che il dataset sia presente
+        mnist_path = ensure_mnist_dataset(data_dir)
+        
+        # Carichiamo il dataset completo
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))
+        ])
+        
+        full_dataset = torchvision.datasets.MNIST(
+            root=data_dir,
+            train=True,
+            download=False,
+            transform=transform
         )
+        
+        # Dividiamo il dataset in parti uguali per ogni client
+        dataset_size = len(full_dataset)
+        client_size = dataset_size // num_clients
+        client_datasets = random_split(
+            full_dataset, 
+            [client_size] * num_clients
+        )
+        
+        # Creiamo i DataLoader per ogni client
+        client_loaders = []
+        for dataset in client_datasets:
+            loader = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=2
+            )
+            client_loaders.append(loader)
+            
+        return client_loaders
+        
+    except Exception as e:
+        raise DataError(f"Errore nella divisione del dataset: {str(e)}")
+
+def get_validation_loader(batch_size=32, data_dir='data'):
+    """
+    Crea un DataLoader per il set di validazione MNIST.
+    
+    Args:
+        batch_size: Dimensione del batch
+        data_dir: Directory del dataset
+        
+    Returns:
+        DataLoader: DataLoader per il set di validazione
+        
+    Raises:
+        DataError: Se ci sono problemi nel caricamento dei dati
+    """
+    try:
+        # Assicuriamoci che il dataset sia presente
+        mnist_path = ensure_mnist_dataset(data_dir)
+        
+        # Carichiamo il dataset di test per la validazione
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))
+        ])
+        
+        val_dataset = torchvision.datasets.MNIST(
+            root=data_dir,
+            train=False,
+            download=False,
+            transform=transform
+        )
+        
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=2
+        )
+        
         return val_loader
         
-    except DataError:
-        raise
     except Exception as e:
-        raise DataError(f"Errore imprevisto nel caricamento dei dati di validazione: {str(e)}") 
+        raise DataError(f"Errore nel caricamento del set di validazione: {str(e)}") 

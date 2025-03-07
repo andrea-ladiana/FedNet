@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from config.settings import DEVICE
 
+#TODO: da rivedere
 def compute_gae(rewards, values, next_values, gamma=0.99, lambda_=0.95):
     """
     Calcola il Generalized Advantage Estimation (GAE).

@@ -20,9 +20,10 @@ def compute_data_quality():
     """
     return random.random()  # Dummy: restituisce un valore casuale tra 0 e 1
 
+#TODO: da cambiare
 def compute_client_scores():
     """
-    Calcola gli score per tutti i client combinando le varie metriche. (da cambiare)
+    Calcola gli score per tutti i client combinando le varie metriche.
     Ritorna un tensore di dimensione (num_clients,) con gli score normalizzati.
     """
     scores = torch.zeros(NUM_CLIENTS, device=DEVICE)

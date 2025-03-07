@@ -12,8 +12,8 @@ NUM_CLIENTS = 3
 CLIENT_FEATURE_DIM = 6
 
 # Parametri di training federato
-LOCAL_EPOCHS = 1   # epoche di training locale su ogni client
-GLOBAL_ROUNDS = 5  # quanti round di federated learning eseguire
+LOCAL_EPOCHS = 10   # epoche di training locale su ogni client
+GLOBAL_ROUNDS = 4  # quanti round di federated learning eseguire
 
 # Parametri di training aggregator
 LR_AGGREGATOR = 1e-3
