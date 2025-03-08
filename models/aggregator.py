@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from config.settings import CLIENT_FEATURE_DIM, NUM_CLIENTS
+from config.settings import NUM_CLIENTS, NUM_SCORES
 from models.base import BaseModel
 from utils.exceptions import ModelError
 from utils.validation import (
@@ -11,15 +11,25 @@ from utils.validation import (
 class ValueNet(BaseModel):
     """
     Rete per stimare il valore atteso del reward (baseline).
+    Prende in input i 6 score separati per ogni client.
     """
-    def __init__(self, input_dim=CLIENT_FEATURE_DIM, hidden_dim=16, num_clients=NUM_CLIENTS):
+    def __init__(self, num_scores=NUM_SCORES, hidden_dim=32, num_clients=NUM_CLIENTS):
         super(ValueNet, self).__init__()
+        
+        # Elaborazione iniziale di ogni score
+        self.score_encoder = nn.Sequential(
+            nn.Linear(num_scores, hidden_dim),
+            nn.ReLU()
+        )
+        
+        # Elaborazione dell'informazione aggregata di tutti i client
         self.shared = nn.Sequential(
-            nn.Linear(input_dim * num_clients, hidden_dim),
+            nn.Linear(hidden_dim * num_clients, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU()
         )
+        
         self.value_head = nn.Linear(hidden_dim, 1)
         
     def forward(self, x):
@@ -27,15 +37,19 @@ class ValueNet(BaseModel):
         Forward pass della rete.
         
         Args:
-            x: Input di forma (N, input_dim), con N = num_clients
+            x: Input di forma (num_clients, num_scores)
             
         Returns:
             value: Stima del valore atteso del reward
         """
-        x_flat = x.view(1, -1)  # (1, input_dim * num_clients)
-        s = self.shared(x_flat)   # (1, hidden_dim)
-        value = self.value_head(s)  # (1, 1)
-        return value.squeeze()  # (1,)
+        # Codifica separata per ogni client
+        encoded = self.score_encoder(x)  # (num_clients, hidden_dim)
+        
+        # Appiattimento e elaborazione congiunta
+        x_flat = encoded.view(1, -1)  # (1, hidden_dim * num_clients)
+        s = self.shared(x_flat)       # (1, hidden_dim)
+        value = self.value_head(s)    # (1, 1)
+        return value.squeeze()        # (1,)
 
 class AggregatorNet(BaseModel):
     """
@@ -43,14 +57,22 @@ class AggregatorNet(BaseModel):
     1. Dirichlet params -> pesi di aggregazione
     2. exclude_flag -> booleano supervisionato
     3. client_score -> punteggio reale supervisionato
+    
+    Prende in input i 6 score separati per ogni client.
     """
-    def __init__(self, input_dim=CLIENT_FEATURE_DIM, hidden_dim=16, num_clients=NUM_CLIENTS):
+    def __init__(self, num_scores=NUM_SCORES, hidden_dim=32, num_clients=NUM_CLIENTS):
         super(AggregatorNet, self).__init__()
         self.num_clients = num_clients
         
-        # Strato condiviso
+        # Elaborazione iniziale di ogni score
+        self.score_encoder = nn.Sequential(
+            nn.Linear(num_scores, hidden_dim),
+            nn.ReLU()
+        )
+        
+        # Strato condiviso per l'elaborazione dell'informazione aggregata
         self.shared = nn.Sequential(
-            nn.Linear(input_dim * num_clients, hidden_dim),
+            nn.Linear(hidden_dim * num_clients, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU()
@@ -70,18 +92,21 @@ class AggregatorNet(BaseModel):
         Forward pass della rete.
         
         Args:
-            x: Input di forma (N, input_dim), con N = num_clients
+            x: Input di forma (num_clients, num_scores)
             
         Returns:
             alpha_params: Parametri Dirichlet per un unico vettore di pesi
             exclude_flag: Booleani per ogni client
             client_score: Punteggi per ogni client
         """
-        # Concateniamo i feature di tutti i client
-        x_flat = x.view(1, -1)  # (1, input_dim * num_clients)
+        # Codifica separata per ogni client
+        encoded = self.score_encoder(x)  # (num_clients, hidden_dim)
         
-        s = self.shared(x_flat)   # (1, hidden_dim)
+        # Appiattimento e elaborazione congiunta
+        x_flat = encoded.view(1, -1)  # (1, hidden_dim * num_clients)
+        s = self.shared(x_flat)       # (1, hidden_dim)
         
+        # Output delle tre teste
         raw_dirichlet = self.dirichlet_head(s)  # (1, num_clients)
         alpha_params = F.softplus(raw_dirichlet) + 1e-3  # per evitare 0 esatto
         alpha_params = alpha_params.squeeze(0)  # (num_clients,)
@@ -92,7 +117,7 @@ class AggregatorNet(BaseModel):
         client_score = self.score_head(s)  # (1, num_clients)
         client_score = client_score.squeeze(0)  # (num_clients,)
         
-        return alpha_params, exclude_flag, client_score 
+        return alpha_params, exclude_flag, client_score
 
 class FedAvgAggregator:
     def __init__(self, model):

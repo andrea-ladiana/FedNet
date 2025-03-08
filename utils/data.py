@@ -83,13 +83,16 @@ def ensure_mnist_dataset(data_dir='data'):
 def split_dataset_mnist(num_clients=NUM_CLIENTS, batch_size=BATCH_SIZE):
     """
     Divide il dataset MNIST tra i client in modo asimmetrico.
+    Crea sia train che test loader per ogni client.
     
     Args:
         num_clients: Numero di client
         batch_size: Dimensione del batch per ogni client
         
     Returns:
-        list: Lista di DataLoader, uno per ogni client
+        tuple: (train_loaders, test_loaders)
+            - train_loaders: Lista di DataLoader per il training, uno per ogni client
+            - test_loaders: Lista di DataLoader per il test, uno per ogni client
         
     Raises:
         DataError: Se ci sono problemi nel caricamento dei dati
@@ -104,44 +107,79 @@ def split_dataset_mnist(num_clients=NUM_CLIENTS, batch_size=BATCH_SIZE):
             transforms.Normalize((0.1307,), (0.3081,))
         ])
         
-        full_dataset = torchvision.datasets.MNIST(
+        # Dataset di training
+        train_dataset = torchvision.datasets.MNIST(
             root=DATA_DIR,
             train=True,
             download=False,
             transform=transform
         )
         
+        # Dataset di test
+        test_dataset = torchvision.datasets.MNIST(
+            root=DATA_DIR,
+            train=False,
+            download=False,
+            transform=transform
+        )
+        
         # Generiamo le dimensioni asimmetriche per i client
-        client_sizes = generate_client_sizes(len(full_dataset), num_clients)
+        train_sizes = generate_client_sizes(len(train_dataset), num_clients)
+        test_sizes = generate_client_sizes(len(test_dataset), num_clients)
         
         # Stampa delle dimensioni dei dataset per verifica
         print("\nDistribuzione dei dati tra i client:")
-        for i, size in enumerate(client_sizes):
-            print(f"Client {i}: {size} dati ({size/len(full_dataset)*100:.1f}%)")
+        for i, (train_size, test_size) in enumerate(zip(train_sizes, test_sizes)):
+            print(f"Client {i}:")
+            print(f"  - Training: {train_size} dati ({train_size/len(train_dataset)*100:.1f}%)")
+            print(f"  - Test: {test_size} dati ({test_size/len(test_dataset)*100:.1f}%)")
         
-        # Suddivisione degli indici in maniera disgiunta
-        indices = torch.randperm(len(full_dataset)).tolist()
-        client_datasets = []
+        # Suddivisione degli indici di training in maniera disgiunta
+        train_indices = torch.randperm(len(train_dataset)).tolist()
+        train_client_datasets = []
         start = 0
-        for size in client_sizes:
-            client_indices = indices[start:start+size]
-            client_datasets.append(Subset(full_dataset, client_indices))
+        for size in train_sizes:
+            client_indices = train_indices[start:start+size]
+            train_client_datasets.append(Subset(train_dataset, client_indices))
+            start += size
+            
+        # Suddivisione degli indici di test in maniera disgiunta
+        test_indices = torch.randperm(len(test_dataset)).tolist()
+        test_client_datasets = []
+        start = 0
+        for size in test_sizes:
+            client_indices = test_indices[start:start+size]
+            test_client_datasets.append(Subset(test_dataset, client_indices))
             start += size
         
         # Creiamo i DataLoader per ogni client
-        client_loaders = []
-        for dataset in client_datasets:
-            loader = DataLoader(
-                dataset,
+        train_loaders = []
+        test_loaders = []
+        
+        for train_dataset, test_dataset in zip(train_client_datasets, test_client_datasets):
+            # Training loader
+            train_loader = DataLoader(
+                train_dataset,
                 batch_size=batch_size,
                 shuffle=True,
                 num_workers=NUM_WORKERS,
                 pin_memory=PIN_MEMORY,
                 prefetch_factor=PREFETCH_FACTOR
             )
-            client_loaders.append(loader)
+            train_loaders.append(train_loader)
             
-        return client_loaders
+            # Test loader
+            test_loader = DataLoader(
+                test_dataset,
+                batch_size=batch_size,
+                shuffle=False,  # No shuffle per il test
+                num_workers=NUM_WORKERS,
+                pin_memory=PIN_MEMORY,
+                prefetch_factor=PREFETCH_FACTOR
+            )
+            test_loaders.append(test_loader)
+            
+        return train_loaders, test_loaders
         
     except Exception as e:
         raise DataError(f"Errore nella divisione del dataset: {str(e)}")

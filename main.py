@@ -6,7 +6,7 @@ import numpy as np
 
 from config.settings import (
     DEVICE, NUM_CLIENTS, LOCAL_EPOCHS, GLOBAL_ROUNDS,
-    LR_AGGREGATOR, CLIENT_FEATURE_DIM, ATTACK_FRACTION,
+    LR_AGGREGATOR, NUM_SCORES, ATTACK_FRACTION,
     NOISE_STD, CLIENT_FAILURE_PROB
 )
 from models.local import LocalMNISTModel
@@ -16,8 +16,7 @@ from training.evaluation import evaluate_model
 from utils.data import split_dataset_mnist, get_validation_loader
 from rl.rl import rl_update_step, supervised_update_step
 from utils.logger import FederatedLogger
-from metrics.client import compute_client_scores
-from metrics.model import compute_model_scores
+from metrics.score_computation import compute_scores
 from utils.exceptions import (
     FedNetError, ModelError, DataError, AggregationError,
     ClientError, RLError
@@ -63,7 +62,7 @@ def main_federated_rl_example():
         # 1) Carichiamo i dataloader di 3 client su MNIST
         try:
             print("Caricamento del dataset MNIST...")
-            client_loaders = split_dataset_mnist(num_clients=NUM_CLIENTS)
+            train_loaders, test_loaders = split_dataset_mnist(num_clients=NUM_CLIENTS)
             val_loader = get_validation_loader()
         except DataError as e:
             print(f"Errore nel caricamento dei dati: {str(e)}")
@@ -111,15 +110,14 @@ def main_federated_rl_example():
                 for i in range(NUM_CLIENTS):
                     try:
                         print(f"Training locale del client {i+1}/{NUM_CLIENTS}...")
-                        train_local_model(local_models[i], client_loaders[i], epochs=LOCAL_EPOCHS)
+                        train_local_model(local_models[i], train_loaders[i], epochs=LOCAL_EPOCHS)
                     except ModelError as e:
                         print(f"Errore nel training del client {i}: {str(e)}")
                         continue
                 
                 # (B) Calcoliamo gli score dei client
                 try:
-                    client_scores = compute_client_scores()
-                    model_scores = compute_model_scores()
+                    scores = compute_scores(local_models, global_model, test_loaders)  # Usiamo i test loader
                 except Exception as e:
                     raise ClientError(f"Errore nel calcolo degli score: {str(e)}")
                 
@@ -131,7 +129,7 @@ def main_federated_rl_example():
                     aggregator_net.eval()
                     value_net.eval()
                     with torch.no_grad():
-                        alpha_params, exclude_pred, _ = aggregator_net(client_scores.unsqueeze(1))
+                        alpha_params, exclude_pred, client_scores = aggregator_net(scores)
                         # Campioniamo un vettore di pesi dalla Dirichlet
                         dist = torch.distributions.dirichlet.Dirichlet(alpha_params)
                         w = dist.sample()
@@ -170,7 +168,7 @@ def main_federated_rl_example():
                 try:
                     rl_metrics = rl_update_step(
                         aggregator_net, value_net, optimizer,
-                        client_scores.unsqueeze(1), reward_history, reward
+                        scores, reward_history, reward  # Passiamo gli score completi
                     )
                     print(f"  [RL] Total Loss = {rl_metrics['total_loss']:.4f}")
                     print(f"  [RL] Policy Loss = {rl_metrics['policy_loss']:.4f}")
@@ -185,7 +183,7 @@ def main_federated_rl_example():
                 try:
                     sup_loss = supervised_update_step(
                         aggregator_net, optimizer, 
-                        client_scores.unsqueeze(1), exclude_true, client_scores
+                        scores, exclude_true, client_scores  # Passiamo gli score completi
                     )
                     print(f"  [SUP] Loss = {sup_loss:.4f}")
                     logger.log_metrics({'supervised_loss': sup_loss})
@@ -340,7 +338,7 @@ if __name__ == "__main__":
         # Carichiamo i dataloader dei client
         try:
             print("Caricamento del dataset MNIST...")
-            client_loaders = split_dataset_mnist()
+            train_loaders, test_loaders = split_dataset_mnist()
             val_loader = get_validation_loader()
         except DataError as e:
             print(f"Errore nel caricamento dei dati: {str(e)}")
@@ -356,7 +354,7 @@ if __name__ == "__main__":
         
         # Eseguiamo il training federato
         try:
-            train_federated(global_model, client_loaders, val_loader)
+            train_federated(global_model, train_loaders, val_loader)
         except FedNetError as e:
             print(f"Errore durante il training federato: {str(e)}")
             traceback.print_exc()

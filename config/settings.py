@@ -8,6 +8,17 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Numero di client in federated learning
 NUM_CLIENTS = 10
 
+# Dimensioni degli score
+NUM_SCORES = 6  # [trustworthiness, hardware, data, similarity, contribution, performance]
+SCORE_NAMES = [
+    'trustworthiness',  # Affidabilità del client
+    'hardware',         # Qualità hardware
+    'data',            # Qualità dei dati
+    'similarity',      # Similarità del modello
+    'contribution',    # Contributo del modello
+    'performance'      # Performance del modello
+]
+
 # Numero di feature per ogni client
 CLIENT_FEATURE_DIM = 6
 
@@ -20,16 +31,6 @@ LR_AGGREGATOR = 1e-3
 
 # Batch size per MNIST
 BATCH_SIZE = 1024
-
-# Parametri per il calcolo degli score (da cambiare)
-SCORE_WEIGHTS = {
-    'similarity': 0.3,      # Similarità del modello
-    'contribution': 0.2,    # Contributo del modello
-    'trustworthiness': 0.1, # Affidabilità del client
-    'performance': 0.1,     # Performance del modello
-    'hardware': 0.15,       # Qualità hardware
-    'data': 0.15           # Qualità dei dati
-}
 
 # Configurazione logging
 LOG_DIR = os.path.join('runs', datetime.now().strftime('%Y%m%d_%H%M%S'))
