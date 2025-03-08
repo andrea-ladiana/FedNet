@@ -1,6 +1,7 @@
 # File di sistema Windows
 desktop.ini
 Thumbs.db
+temp.py
 
 # File Python
 __pycache__/

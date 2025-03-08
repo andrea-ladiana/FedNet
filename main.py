@@ -2,10 +2,12 @@ import torch
 import torch.optim as optim
 import sys
 import traceback
+import numpy as np
 
 from config.settings import (
     DEVICE, NUM_CLIENTS, LOCAL_EPOCHS, GLOBAL_ROUNDS,
-    LR_AGGREGATOR, CLIENT_FEATURE_DIM
+    LR_AGGREGATOR, CLIENT_FEATURE_DIM, ATTACK_FRACTION,
+    NOISE_STD, CLIENT_FAILURE_PROB
 )
 from models.local import LocalMNISTModel
 from models.aggregator import AggregatorNet, ValueNet, FedAvgAggregator
@@ -24,6 +26,26 @@ from utils.validation import (
     validate_model, validate_dataloader, validate_positive_int,
     validate_learning_rate, validate_weights
 )
+
+def is_client_broken(client_id, round_num, client_failure_history):
+    """
+    Verifica se un client è rotto in questo round specifico.
+    
+    Args:
+        client_id: ID del client da verificare
+        round_num: Numero del round corrente
+        client_failure_history: Dizionario che tiene traccia dei fallimenti
+        
+    Returns:
+        bool: True se il client è rotto in questo round
+    """
+    if CLIENT_FAILURE_PROB <= 0.0:
+        return False
+        
+    is_broken = np.random.rand() < CLIENT_FAILURE_PROB
+    if is_broken:
+        client_failure_history[client_id] = round_num
+    return is_broken
 
 def main_federated_rl_example():
     """
@@ -239,21 +261,54 @@ def train_federated(model, train_dataloaders, test_dataloader,
         # Inizializziamo l'aggregatore
         aggregator = FedAvgAggregator(model)
         
+        # Dizionario per tenere traccia dei fallimenti dei client
+        client_failure_history = {}
+        
         # Training federato
         for round_idx in range(num_rounds):
             try:
                 print(f"\nRound {round_idx + 1}/{num_rounds}")
                 
+                # Selezione dei client attaccati in questo round
+                attacked_clients = []
+                if ATTACK_FRACTION > 0.0:
+                    num_attacked = max(1, int(ATTACK_FRACTION * NUM_CLIENTS))
+                    attacked_clients = np.random.choice(range(NUM_CLIENTS), size=num_attacked, replace=False)
+                    if len(attacked_clients) > 0:
+                        print(f"Client attaccati in questo round: {attacked_clients}")
+                
                 # Training locale
                 client_models = []
+                active_clients = 0
+                broken_clients = []
+                
                 for client_idx, dataloader in enumerate(train_dataloaders):
+                    # Verifica se il client è rotto
+                    if is_client_broken(client_idx, round_idx, client_failure_history):
+                        broken_clients.append(client_idx)
+                        continue
+                        
+                    active_clients += 1
                     try:
-                        client_model = train_local_model(
-                            model, dataloader, local_epochs, learning_rate
+                        # Training con possibile data poisoning
+                        is_attacker = client_idx in attacked_clients
+                        client_model, _, _ = train_local_model(
+                            model, dataloader, local_epochs, learning_rate,
+                            poison=is_attacker, noise_std=NOISE_STD
                         )
                         client_models.append(client_model)
                     except Exception as e:
                         raise ModelError(f"Errore nel training del client {client_idx}: {str(e)}")
+                
+                # Stampa informazioni sui client rotti e attivi
+                if broken_clients:
+                    print(f"Client rotti in questo round: {broken_clients} ({len(broken_clients)}/{NUM_CLIENTS})")
+                print(f"Client attivi in questo round: {active_clients}/{NUM_CLIENTS}")
+                
+                # Se nessun client è attivo in questo round, manteniamo il modello precedente
+                if active_clients == 0:
+                    print("Nessun client attivo in questo round. Mantengo il modello precedente.")
+                    continue
                         
                 # Aggregazione
                 try:
@@ -279,4 +334,35 @@ def train_federated(model, train_dataloaders, test_dataloader,
         raise ModelError(f"Errore imprevisto nel training federato: {str(e)}")
 
 if __name__ == "__main__":
-    main_federated_rl_example()
+    try:
+        print("Inizializzazione del training federato...")
+        
+        # Carichiamo i dataloader dei client
+        try:
+            print("Caricamento del dataset MNIST...")
+            client_loaders = split_dataset_mnist()
+            val_loader = get_validation_loader()
+        except DataError as e:
+            print(f"Errore nel caricamento dei dati: {str(e)}")
+            sys.exit(1)
+        
+        # Inizializziamo il modello globale
+        try:
+            print("Inizializzazione del modello globale...")
+            global_model = LocalMNISTModel().to(DEVICE)
+        except Exception as e:
+            print(f"Errore nell'inizializzazione del modello: {str(e)}")
+            sys.exit(1)
+        
+        # Eseguiamo il training federato
+        try:
+            train_federated(global_model, client_loaders, val_loader)
+        except FedNetError as e:
+            print(f"Errore durante il training federato: {str(e)}")
+            traceback.print_exc()
+            sys.exit(1)
+            
+    except Exception as e:
+        print(f"Errore imprevisto: {str(e)}")
+        traceback.print_exc()
+        sys.exit(1)
