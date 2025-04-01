@@ -99,8 +99,17 @@ class AggregatorNet(BaseModel):
             exclude_flag: Booleani per ogni client
             client_score: Punteggi per ogni client
         """
+        batch_size = x.size(0)
+        
         # Codifica separata per ogni client
         encoded = self.score_encoder(x)  # (num_clients, hidden_dim)
+        
+        # Verifichiamo se le dimensioni sono corrette
+        if encoded.size(0) != self.num_clients:
+            # Adattiamo il tensore alla dimensione attesa
+            resized = torch.zeros(self.num_clients, encoded.size(1), device=x.device)
+            resized[:min(encoded.size(0), self.num_clients)] = encoded[:min(encoded.size(0), self.num_clients)]
+            encoded = resized
         
         # Appiattimento e elaborazione congiunta
         x_flat = encoded.view(1, -1)  # (1, hidden_dim * num_clients)
