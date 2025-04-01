@@ -34,19 +34,19 @@ def compute_client_trustworthiness():
     """
     Calcola l'affidabilità del client.
     """
-    return random.random()  # Dummy: restituisce un valore casuale tra 0 e 1
+    return 1  # Dummy: restituisce un valore casuale tra 0 e 1
 
 def compute_hardware_quality():
     """
     Calcola la qualità dell'hardware del client.
     """
-    return random.random()  # Dummy: restituisce un valore casuale tra 0 e 1
+    return 1  # Dummy: restituisce un valore casuale tra 0 e 1
 
 def compute_data_quality():
     """
     Calcola la qualità dei dati del client.
     """
-    return random.random()  # Dummy: restituisce un valore casuale tra 0 e 1
+    return 1  # Dummy: restituisce un valore casuale tra 0 e 1
 
 _current_client_model = None
 _global_model = None

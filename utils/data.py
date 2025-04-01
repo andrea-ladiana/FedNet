@@ -90,9 +90,10 @@ def split_dataset_mnist(num_clients=NUM_CLIENTS, batch_size=BATCH_SIZE):
         batch_size: Dimensione del batch per ogni client
         
     Returns:
-        tuple: (train_loaders, test_loaders)
+        tuple: (train_loaders, test_loaders, train_sizes)
             - train_loaders: Lista di DataLoader per il training, uno per ogni client
             - test_loaders: Lista di DataLoader per il test, uno per ogni client
+            - train_sizes: Lista delle dimensioni dei dataset di training per ogni client
         
     Raises:
         DataError: Se ci sono problemi nel caricamento dei dati
@@ -179,7 +180,8 @@ def split_dataset_mnist(num_clients=NUM_CLIENTS, batch_size=BATCH_SIZE):
             )
             test_loaders.append(test_loader)
             
-        return train_loaders, test_loaders
+        # Restituisce i loader e le dimensioni di training
+        return train_loaders, test_loaders, train_sizes
         
     except Exception as e:
         raise DataError(f"Errore nella divisione del dataset: {str(e)}")

@@ -476,8 +476,21 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
             try:
                 # 3.1) Carichiamo i dataloader (diversi per ogni esperimento)
                 print("Caricamento del dataset MNIST...")
-                train_loaders, test_loaders = split_dataset_mnist(num_clients=NUM_CLIENTS)
+                # Modifica: Recuperiamo anche train_sizes
+                train_loaders, test_loaders, train_sizes = split_dataset_mnist(num_clients=NUM_CLIENTS)
                 val_loader = get_validation_loader()
+
+                # Identifichiamo client con dimensione dati anomala (fuori da 1 std dev)
+                train_sizes_np = np.array(train_sizes)
+                mean_size = np.mean(train_sizes_np)
+                std_size = np.std(train_sizes_np)
+                anomalous_size_clients = [
+                    i for i, size in enumerate(train_sizes) 
+                    if abs(size - mean_size) > std_size
+                ]
+                if anomalous_size_clients:
+                    print(f"Client con dimensione dati anomala (Exp {exp_idx+1}): {anomalous_size_clients}")
+                    exp_logger.log_config({'anomalous_size_clients': anomalous_size_clients}) # Logghiamo anche
                 
                 # 3.2) Inizializziamo nuovi modelli client per questo esperimento
                 print("Inizializzazione dei modelli locali per questo esperimento...")
@@ -494,23 +507,73 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                 # 3.5) Lista dei reward per questo esperimento specifico
                 experiment_rewards = []
                 
+                # Dizionario per tenere traccia dei fallimenti dei client in questo esperimento
+                client_failure_history = {}
+                
                 # 3.6) Eseguiamo i round federati per questo esperimento
                 for round_idx in range(GLOBAL_ROUNDS):
-                    print(f"\n--- Round {round_idx+1}/{GLOBAL_ROUNDS} dell'Esperimento {exp_idx+1} ---")
+                    print(f"\n--- Round {round_idx+1}/{GLOBAL_ROUNDS} dell\'Esperimento {exp_idx+1} ---")
                     
+                    # Identifichiamo i client attaccati con rumore e quelli falliti per questo round
+                    noisy_clients_in_round = []
+                    if ATTACK_FRACTION > 0.0:
+                        num_noisy = max(1, int(ATTACK_FRACTION * NUM_CLIENTS))
+                        noisy_clients_in_round = np.random.choice(range(NUM_CLIENTS), size=num_noisy, replace=False).tolist()
+                    
+                    broken_clients_in_round = []
+                    active_client_indices = []
+                    trained_local_models = [] # Lista per i modelli effettivamente addestrati
+
                     # (A) Training locale di ciascun client
                     for i in range(NUM_CLIENTS):
+                        # Verifica fallimento
+                        if is_client_broken(i, round_idx, client_failure_history):
+                            broken_clients_in_round.append(i)
+                            continue # Salta training per client rotto
+
+                        # Client attivo
+                        active_client_indices.append(i)
+                        current_model = local_models[i] # Usiamo il modello inizializzato per questo esperimento
+                        is_noisy = i in noisy_clients_in_round
+
                         try:
-                            print(f"Training locale del client {i+1}/{NUM_CLIENTS}...")
-                            train_local_model(local_models[i], train_loaders[i], epochs=LOCAL_EPOCHS)
+                            print(f"Training locale del client {i+1}/{NUM_CLIENTS} {'(rumoroso)' if is_noisy else ''}...")
+                            # Passiamo poison e noise_std
+                            trained_model, _, _ = train_local_model(
+                                current_model, train_loaders[i], epochs=LOCAL_EPOCHS,
+                                poison=is_noisy, noise_std=NOISE_STD
+                            )
+                            trained_local_models.append(trained_model)
                         except ModelError as e:
                             print(f"Errore nel training del client {i}: {str(e)}")
+                            # Se il training fallisce, consideriamo il client rotto per questo round
+                            if i not in broken_clients_in_round: broken_clients_in_round.append(i)
+                            if i in active_client_indices: active_client_indices.remove(i)
                             continue
                     
-                    # (B) Calcoliamo gli score dei client
+                    num_active_clients = len(active_client_indices)
+                    print(f"Client attivi in questo round: {num_active_clients}/{NUM_CLIENTS}")
+                    if broken_clients_in_round:
+                         print(f"Client falliti/rotti in questo round: {broken_clients_in_round}")
+                    if noisy_clients_in_round:
+                         print(f"Client con dati rumorosi in questo round: {noisy_clients_in_round}")
+
+                    # Se nessun client è attivo, saltiamo il resto del round
+                    if num_active_clients == 0:
+                        print("Nessun client attivo per l'aggregazione. Salto il round.")
+                        # Potremmo voler loggare qualcosa qui o gestire diversamente
+                        continue 
+
+                    # Aggiorniamo la lista local_models con i modelli addestrati (per coerenza, anche se non usata dopo)
+                    for idx, trained_model in zip(active_client_indices, trained_local_models):
+                        local_models[idx] = trained_model
+
+                    # (B) Calcoliamo gli score dei client ATTIVI
                     try:
-                        scores = compute_scores(local_models, global_model, test_loaders)
-                        print(f"DEBUG - Dimensione degli score calcolati: {scores.shape}")
+                        # Passiamo solo i modelli dei client attivi e il modello globale
+                        # Nota: compute_scores deve poter gestire un numero di modelli < NUM_CLIENTS
+                        scores = compute_scores(trained_local_models, global_model, [test_loaders[i] for i in active_client_indices])
+                        print(f"DEBUG - Dimensione degli score calcolati (attivi): {scores.shape}")
                     except Exception as e:
                         raise ClientError(f"Errore nel calcolo degli score: {str(e)}")
                     
@@ -531,56 +594,62 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                             if len(alpha_params) != NUM_CLIENTS:
                                 print(f"CORREZIONE - Ridimensionamento di alpha_params da {len(alpha_params)} a {NUM_CLIENTS}")
                                 new_alpha = torch.ones(NUM_CLIENTS, device=alpha_params.device) * 1e-3
-                                new_alpha[:min(len(alpha_params), NUM_CLIENTS)] = alpha_params[:min(len(alpha_params), NUM_CLIENTS)]
+                                num_to_copy = min(len(alpha_params), NUM_CLIENTS)
+                                new_alpha[:num_to_copy] = alpha_params[:num_to_copy]
                                 alpha_params = new_alpha
                             
-                            # Campioniamo un vettore di pesi dalla Dirichlet
-                            dist = torch.distributions.dirichlet.Dirichlet(alpha_params)
+                            # Campioniamo un vettore di pesi dalla Dirichlet (dimensione NUM_CLIENTS)
+                            dist = torch.distributions.dirichlet.Dirichlet(torch.clamp_min(alpha_params, 1e-6))
                             w = dist.sample()
                             
                             # Stampiamo le dimensioni per debug
-                            print(f"DEBUG - Dimensione di w (pesi): {w.shape}")
+                            print(f"DEBUG - Dimensione di w (pesi campionati): {w.shape}")
                             
                             # Verifichiamo che i pesi siano validi
-                            if torch.any(w <= 0):
-                                w = torch.clamp(w, min=1e-3)
-                                
+                            w = torch.clamp(w, min=1e-6) # Clamp invece di 1e-3 per sicurezza
                             w = w / w.sum()  # normalizziamo
                             
-                            # Verifichiamo che i pesi abbiano dimensione esattamente NUM_CLIENTS
-                            if len(w) != NUM_CLIENTS:
-                                print(f"CORREZIONE - Ridimensionamento dei pesi da {len(w)} a {NUM_CLIENTS}")
-                                new_w = torch.ones(NUM_CLIENTS, device=w.device) / NUM_CLIENTS
-                                new_w[:min(len(w), NUM_CLIENTS)] = w[:min(len(w), NUM_CLIENTS)]
-                                w = new_w
-                                w = w / w.sum()  # rinormalizziamo
-                            
-                            # Se exclude_pred[i] > 0.5, escludiamo il client i
-                            for i in range(NUM_CLIENTS):
-                                if exclude_pred[i] > 0.5:
-                                    w[i] = 0.0
+                            # Azzeriamo i pesi per i client non attivi (falliti o rotti durante training)
+                            weights_mask = torch.zeros(NUM_CLIENTS, device=w.device)
+                            weights_mask[active_client_indices] = 1.0
+                            w = w * weights_mask 
+
+                            # Se exclude_pred[i] > 0.5, escludiamo il client i (anche se attivo)
+                            exclude_mask = (exclude_pred <= 0.5).float() # 1.0 se NON escluso
+                            w = w * exclude_mask
                                     
-                            # Verifichiamo che ci siano ancora pesi validi dopo l'esclusione
-                            if w.sum() > 0:
-                                w = w / w.sum()  # rinormalizziamo dopo l'esclusione
+                            # Verifichiamo che ci siano ancora pesi validi dopo l'esclusione e fallimenti
+                            if w.sum() > 1e-9: # Usiamo tolleranza piccola
+                                w = w / w.sum()  # rinormalizziamo
                             else:
-                                # Se tutti i client sono stati esclusi, usiamo pesi uniformi
-                                w = torch.ones(NUM_CLIENTS, device=w.device) / NUM_CLIENTS
-                            
+                                # Se tutti i client attivi sono stati esclusi o i pesi sono nulli, 
+                                # usiamo pesi uniformi SOLO sui client ATTIVI
+                                print("WARNING: Tutti i client attivi esclusi o pesi nulli. Riassegno pesi uniformi ai client attivi.")
+                                w = torch.zeros(NUM_CLIENTS, device=w.device)
+                                if num_active_clients > 0:
+                                     uniform_weight = 1.0 / num_active_clients
+                                     for idx in active_client_indices:
+                                         w[idx] = uniform_weight
+                                else:
+                                     # Caso estremo: nessun client attivo -> pesi uniformi su tutti (improbabile)
+                                     w = torch.ones(NUM_CLIENTS, device=w.device) / NUM_CLIENTS
+
                             # Stampiamo le dimensioni finali per debug
-                            print(f"DEBUG - Dimensione finale di w (pesi): {w.shape}")
+                            print(f"DEBUG - Dimensione finale di w (pesi aggregazione): {w.shape}")
                             
                             # Loggiamo i parametri e le predizioni
-                            exp_logger.log_alpha_params(alpha_params)
-                            exp_logger.log_weights(w)
-                            exp_logger.log_exclude_flags(exclude_pred)
-                            exp_logger.log_client_scores(client_scores)
+                            exp_logger.log_alpha_params(alpha_params) # Log alpha per tutti
+                            exp_logger.log_weights(w) # Log pesi finali per tutti
+                            exp_logger.log_exclude_flags(exclude_pred) # Log predizione esclusione per tutti
+                            exp_logger.log_client_scores(client_scores) # Log score predetti per tutti
                     except Exception as e:
                         raise RLError(f"Errore nell'ottenimento dei pesi di aggregazione: {str(e)}")
                     
-                    # (D) Aggreghiamo i modelli usando i pesi
+                    # (D) Aggreghiamo i modelli usando i pesi e i modelli dei client ATTIVI
                     try:
-                        aggregator.aggregate(local_models, w)
+                        # Passiamo solo i modelli dei client che hanno completato il training
+                        # e i pesi corrispondenti (w già maschera i non attivi/esclusi)
+                        aggregator.aggregate(trained_local_models, w[active_client_indices])
                     except AggregationError as e:
                         print(f"Errore nell'aggregazione dei modelli: {str(e)}")
                         continue
@@ -595,10 +664,17 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                         raise ModelError(f"Errore nella valutazione del modello: {str(e)}")
                     
                     # (F) Salvataggio dell'esperienza nel buffer condiviso
-                    experience_buffer['states'].append(scores.detach().clone())
-                    experience_buffer['weights'].append(w.detach().clone())
+                    experience_buffer['states'].append(scores.detach().clone()) # Salviamo gli score calcolati sui client attivi
+                    experience_buffer['weights'].append(w.detach().clone()) # Salviamo i pesi finali usati
                     experience_buffer['rewards'].append(reward)
-                
+
+                    # Stampa riepilogo del round
+                    print("\nRiepilogo Round:")
+                    print(f"  - Client con dimensione dati anomala (stabiliti all'inizio exp.): {anomalous_size_clients if anomalous_size_clients else 'Nessuno'}")
+                    print(f"  - Client con dati rumorosi aggiunti: {noisy_clients_in_round if noisy_clients_in_round else 'Nessuno'}")
+                    print(f"  - Client falliti o con errori training: {broken_clients_in_round if broken_clients_in_round else 'Nessuno'}")
+                    print("-" * 20) # Separatore
+
                 # 3.7) Valutazione finale del modello aggregato per questo esperimento
                 try:
                     final_acc = evaluate_model(global_model, val_loader)
