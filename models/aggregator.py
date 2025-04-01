@@ -99,27 +99,30 @@ class AggregatorNet(BaseModel):
             exclude_flag: Booleani per ogni client
             client_score: Punteggi per ogni client
         """
-        batch_size = x.size(0)
+        # 1. Salviamo dimensione dell'input per debug e verifiche
+        actual_clients = x.size(0)
+        if actual_clients != self.num_clients:
+            print(f"Warning: Numero di client nell'input ({actual_clients}) diverso da quello atteso ({self.num_clients})")
         
-        # Verifichiamo che il numero di client nell'input corrisponda a quello atteso
-        if batch_size != self.num_clients:
-            print(f"Warning: Numero di client nell'input ({batch_size}) diverso da quello atteso ({self.num_clients})")
+        # 2. Assicuriamoci che l'input abbia le dimensioni corrette
+        if actual_clients != self.num_clients:
+            # Creiamo un nuovo tensore della dimensione corretta
+            adjusted_x = torch.zeros(self.num_clients, x.size(1), device=x.device)
+            # Copiamo i dati reali (limitando al più piccolo delle due dimensioni)
+            n_copy = min(actual_clients, self.num_clients)
+            adjusted_x[:n_copy] = x[:n_copy]
+            x = adjusted_x
+            print(f"Input ridimensionato da {actual_clients} a {self.num_clients} client")
         
+        # 3. Ora procediamo con l'elaborazione
         # Codifica separata per ogni client
         encoded = self.score_encoder(x)  # (num_clients, hidden_dim)
         
-        # Verifichiamo se le dimensioni sono corrette
-        if encoded.size(0) != self.num_clients:
-            # Adattiamo il tensore alla dimensione attesa
-            resized = torch.zeros(self.num_clients, encoded.size(1), device=x.device)
-            resized[:min(encoded.size(0), self.num_clients)] = encoded[:min(encoded.size(0), self.num_clients)]
-            encoded = resized
-        
-        # Appiattimento e elaborazione congiunta
+        # 4. Appiattimento e elaborazione congiunta
         x_flat = encoded.view(1, -1)  # (1, hidden_dim * num_clients)
         s = self.shared(x_flat)       # (1, hidden_dim)
         
-        # Output delle tre teste
+        # 5. Output delle tre teste
         raw_dirichlet = self.dirichlet_head(s)  # (1, num_clients)
         alpha_params = F.softplus(raw_dirichlet) + 1e-3  # per evitare 0 esatto
         alpha_params = alpha_params.squeeze(0)  # (num_clients,)
@@ -130,25 +133,8 @@ class AggregatorNet(BaseModel):
         client_score = self.score_head(s)  # (1, num_clients)
         client_score = client_score.squeeze(0)  # (num_clients,)
         
-        # Ci assicuriamo che l'output abbia la dimensione corretta
-        # Se i parametri hanno dimensione diversa da num_clients, li ridimensioniamo
-        if len(alpha_params) != self.num_clients:
-            print(f"Warning: Ridimensionamento dei parametri alpha da {len(alpha_params)} a {self.num_clients}")
-            new_alpha = torch.ones(self.num_clients, device=alpha_params.device) * 1e-3
-            new_alpha[:min(len(alpha_params), self.num_clients)] = alpha_params[:min(len(alpha_params), self.num_clients)]
-            alpha_params = new_alpha
-            
-        if len(exclude_flag) != self.num_clients:
-            print(f"Warning: Ridimensionamento dei flag di esclusione da {len(exclude_flag)} a {self.num_clients}")
-            new_exclude = torch.zeros(self.num_clients, device=exclude_flag.device)
-            new_exclude[:min(len(exclude_flag), self.num_clients)] = exclude_flag[:min(len(exclude_flag), self.num_clients)]
-            exclude_flag = new_exclude
-            
-        if len(client_score) != self.num_clients:
-            print(f"Warning: Ridimensionamento degli score da {len(client_score)} a {self.num_clients}")
-            new_score = torch.zeros(self.num_clients, device=client_score.device)
-            new_score[:min(len(client_score), self.num_clients)] = client_score[:min(len(client_score), self.num_clients)]
-            client_score = new_score
+        # 6. Verifica finale dimensioni (non dovrebbe essere necessaria se i passi precedenti sono corretti)
+        print(f"Dimensioni finali: alpha_params={alpha_params.shape}, exclude_flag={exclude_flag.shape}, client_score={client_score.shape}")
         
         # Verifichiamo che i pesi siano validi per la distribuzione Dirichlet
         if torch.any(alpha_params <= 0):
