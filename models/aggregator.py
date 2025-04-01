@@ -126,6 +126,23 @@ class AggregatorNet(BaseModel):
         client_score = self.score_head(s)  # (1, num_clients)
         client_score = client_score.squeeze(0)  # (num_clients,)
         
+        # Ci assicuriamo che l'output abbia la dimensione corretta
+        # Se i parametri hanno dimensione diversa da num_clients, li ridimensioniamo
+        if len(alpha_params) != self.num_clients:
+            new_alpha = torch.ones(self.num_clients, device=alpha_params.device) * 1e-3
+            new_alpha[:min(len(alpha_params), self.num_clients)] = alpha_params[:min(len(alpha_params), self.num_clients)]
+            alpha_params = new_alpha
+            
+        if len(exclude_flag) != self.num_clients:
+            new_exclude = torch.zeros(self.num_clients, device=exclude_flag.device)
+            new_exclude[:min(len(exclude_flag), self.num_clients)] = exclude_flag[:min(len(exclude_flag), self.num_clients)]
+            exclude_flag = new_exclude
+            
+        if len(client_score) != self.num_clients:
+            new_score = torch.zeros(self.num_clients, device=client_score.device)
+            new_score[:min(len(client_score), self.num_clients)] = client_score[:min(len(client_score), self.num_clients)]
+            client_score = new_score
+        
         return alpha_params, exclude_flag, client_score
 
 class FedAvgAggregator:
