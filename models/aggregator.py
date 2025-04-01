@@ -160,8 +160,10 @@ class FedAvgAggregator:
                 
             # Aggregazione
             state_dict = self.model.state_dict()
+            zero_tensor = torch.zeros_like(next(iter(state_dict.values())))
+            
             for key in state_dict.keys():
-                state_dict[key] = torch.zeros_like(state_dict[key])
+                state_dict[key] = zero_tensor.clone()
                 
             total_weight = 0
             for i, model in enumerate(client_models):

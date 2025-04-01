@@ -100,11 +100,11 @@ def compute_model_contribution():
 
 def compute_model_performance():
     """
-    Calcola la performance del modello come loss sul dataset di test.
-    Un valore più basso indica una performance migliore.
+    Calcola la performance del modello come accuratezza sul dataset di test.
+    Un valore più alto indica una performance migliore.
     
     Returns:
-        float: Loss del modello sul dataset di test
+        float: Accuratezza del modello sul dataset di test
     
     Raises:
         ValueError: Se il test loader non è stato impostato con set_test_loader
@@ -114,5 +114,5 @@ def compute_model_performance():
     if _current_test_loader is None:
         raise ValueError("Il test loader deve essere impostato con set_test_loader prima di chiamare compute_model_performance")
     
-    loss, _ = evaluate_model(_current_client_model, _current_test_loader)
-    return loss 
+    accuracy = evaluate_model(_current_client_model, _current_test_loader)
+    return accuracy 
