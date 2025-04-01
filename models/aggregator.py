@@ -7,6 +7,7 @@ from utils.exceptions import ModelError
 from utils.validation import (
     validate_model, validate_weights, validate_client_scores
 )
+import traceback
 
 class ValueNet(BaseModel):
     """
@@ -99,46 +100,37 @@ class AggregatorNet(BaseModel):
             exclude_flag: Booleani per ogni client
             client_score: Punteggi per ogni client
         """
-        # 1. Salviamo dimensione dell'input per debug e verifiche
-        actual_clients = x.size(0)
-        if actual_clients != self.num_clients:
-            print(f"Warning: Numero di client nell'input ({actual_clients}) diverso da quello atteso ({self.num_clients})")
+        # Elaborazione standard senza ridimensionamento interno
+        # Questo permette a DataParallel di funzionare correttamente
         
-        # 2. Assicuriamoci che l'input abbia le dimensioni corrette
-        if actual_clients != self.num_clients:
-            # Creiamo un nuovo tensore della dimensione corretta
-            adjusted_x = torch.zeros(self.num_clients, x.size(1), device=x.device)
-            # Copiamo i dati reali (limitando al più piccolo delle due dimensioni)
-            n_copy = min(actual_clients, self.num_clients)
-            adjusted_x[:n_copy] = x[:n_copy]
-            x = adjusted_x
-            print(f"Input ridimensionato da {actual_clients} a {self.num_clients} client")
-        
-        # 3. Ora procediamo con l'elaborazione
         # Codifica separata per ogni client
-        encoded = self.score_encoder(x)  # (num_clients, hidden_dim)
+        encoded = self.score_encoder(x)  # Potrebbe avere N_gpu client qui
         
-        # 4. Appiattimento e elaborazione congiunta
-        x_flat = encoded.view(1, -1)  # (1, hidden_dim * num_clients)
-        s = self.shared(x_flat)       # (1, hidden_dim)
+        # Appiattimento e elaborazione congiunta
+        # Nota: x_flat avrà dimensione (1, hidden_dim * N_gpu_clients)
+        # Lo strato shared deve essere compatibile o gestito esternamente
+        x_flat = encoded.view(1, -1)  
+        s = self.shared(x_flat)       # Output condiviso
         
-        # 5. Output delle tre teste
-        raw_dirichlet = self.dirichlet_head(s)  # (1, num_clients)
-        alpha_params = F.softplus(raw_dirichlet) + 1e-3  # per evitare 0 esatto
-        alpha_params = alpha_params.squeeze(0)  # (num_clients,)
+        # Output delle tre teste
+        # Le teste produrranno output basati su N_gpu_clients
+        raw_dirichlet = self.dirichlet_head(s)  
+        alpha_params = F.softplus(raw_dirichlet) + 1e-3  
+        alpha_params = alpha_params.squeeze(0)  
         
-        exclude_flag = torch.sigmoid(self.exclude_head(s))  # (1, num_clients)
-        exclude_flag = exclude_flag.squeeze(0)  # (num_clients,)
+        exclude_flag = torch.sigmoid(self.exclude_head(s))
+        exclude_flag = exclude_flag.squeeze(0)  
         
-        client_score = self.score_head(s)  # (1, num_clients)
-        client_score = client_score.squeeze(0)  # (num_clients,)
+        client_score = self.score_head(s)  
+        client_score = client_score.squeeze(0)  
         
-        # 6. Verifica finale dimensioni (non dovrebbe essere necessaria se i passi precedenti sono corretti)
-        print(f"Dimensioni finali: alpha_params={alpha_params.shape}, exclude_flag={exclude_flag.shape}, client_score={client_score.shape}")
-        
-        # Verifichiamo che i pesi siano validi per la distribuzione Dirichlet
+        # Verifichiamo che i parametri alpha siano positivi
         if torch.any(alpha_params <= 0):
-            alpha_params = torch.clamp(alpha_params, min=1e-3)
+             # Usiamo clamp_min invece di clamp per evitare potenziali problemi con DataParallel
+             alpha_params = torch.clamp_min(alpha_params, min=1e-3)
+        
+        # Non effettuiamo ridimensionamenti qui, verranno gestiti dopo la chiamata in main.py
+        print(f"DEBUG [AggNet Internal] - Input shape: {x.shape}, Output alpha shape: {alpha_params.shape}")
         
         return alpha_params, exclude_flag, client_score
 
@@ -182,29 +174,78 @@ class FedAvgAggregator:
                 validate_weights(weights, len(client_models))
                 
             # Aggregazione
-            state_dict = self.model.state_dict()
-            zero_tensor = torch.zeros_like(next(iter(state_dict.values())))
+            global_state_dict = self.model.state_dict()
+            # Cloniamo per non modificare l'originale qui
+            new_state_dict = {k: torch.zeros_like(v) for k, v in global_state_dict.items()}
             
-            for key in state_dict.keys():
-                state_dict[key] = zero_tensor.clone()
-                
             total_weight = 0
+            print(f"DEBUG [Aggregator] - Inizio aggregazione con {len(client_models)} modelli e {len(weights)} pesi.")
+            
             for i, model in enumerate(client_models):
+                client_state_dict = model.state_dict()
+                
                 if weights is not None:
                     weight = weights[i]
                 else:
+                    # Peso uniforme se non specificato
                     weight = 1.0 / len(client_models)
                     
-                total_weight += weight
-                for key in state_dict.keys():
-                    state_dict[key] += weight * model.state_dict()[key]
+                # Ignora client con peso zero
+                if weight <= 0:
+                    print(f"DEBUG [Aggregator] - Client {i} ignorato (peso={weight})")
+                    continue
                     
-            for key in state_dict.keys():
-                state_dict[key] /= total_weight
+                total_weight += weight
                 
-            self.model.load_state_dict(state_dict)
+                for key in new_state_dict.keys():
+                    if key not in client_state_dict:
+                        print(f"ERROR [Aggregator] - Chiave '{key}' non trovata nel modello client {i}")
+                        continue
+                        
+                    # --->>> DIAGNOSTICA <<<---
+                    global_tensor = new_state_dict[key]
+                    client_tensor = client_state_dict[key]
+                    
+                    if global_tensor.shape != client_tensor.shape:
+                        print(f"--->>> ERRORE DI FORMA RILEVATO <<<---")
+                        print(f"  Chiave: {key}")
+                        print(f"  Forma Globale Attesa: {global_tensor.shape}")
+                        print(f"  Forma Client {i}: {client_tensor.shape}")
+                        print(f"  Peso Client {i}: {weight}")
+                        # Alziamo subito l'eccezione per fermare l'esecuzione qui
+                        raise ModelError(f"Errore di forma per la chiave '{key}' tra modello globale e client {i}: {global_tensor.shape} vs {client_tensor.shape}")
+                    # --->>> FINE DIAGNOSTICA <<<---
+                        
+                    # Aggiornamento ponderato
+                    try:
+                        new_state_dict[key] += weight * client_tensor
+                    except RuntimeError as e:
+                         print(f"--->>> ERRORE RUNTIME DURANTE SOMMA <<<---")
+                         print(f"  Chiave: {key}")
+                         print(f"  Forma Globale: {new_state_dict[key].shape}")
+                         print(f"  Forma Client {i}: {client_tensor.shape}")
+                         print(f"  Peso: {weight}")
+                         print(f"  Messaggio Errore: {e}")
+                         raise e # Rilancia l'errore originale
             
-        except ModelError:
-            raise
+            # Normalizzazione finale (solo se c'è stato qualche contributo)
+            if total_weight > 0:
+                for key in new_state_dict.keys():
+                    new_state_dict[key] /= total_weight
+            else:
+                 print("WARNING [Aggregator] - Nessun client ha contribuito all'aggregazione (total_weight=0). Il modello globale non è stato aggiornato.")
+                 # Non carichiamo il nuovo state_dict perché sarebbe tutto a zero
+                 return
+                
+            # Carica il nuovo stato nel modello globale
+            self.model.load_state_dict(new_state_dict)
+            print(f"DEBUG [Aggregator] - Aggregazione completata. total_weight={total_weight:.4f}")
+            
+        except ModelError as me:
+             # Rilancia l'errore specifico del modello
+             raise me
         except Exception as e:
-            raise ModelError(f"Errore durante l'aggregazione: {str(e)}") 
+             # Incapsula altri errori in un ModelError
+             print(f"ERRORE IMPREVISTO in FedAvgAggregator.aggregate: {e}")
+             traceback.print_exc() # Stampa lo stack trace completo per debug
+             raise ModelError(f"Errore durante l'aggregazione: {str(e)}") 
