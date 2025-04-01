@@ -2,8 +2,21 @@ import torch
 import os
 from datetime import datetime
 
-# Configurazione del dispositivo
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Configurazione del dispositivo con supporto multi-GPU
+if torch.cuda.is_available():
+    GPU_COUNT = torch.cuda.device_count()
+    if GPU_COUNT > 1:
+        print(f"Trovate {GPU_COUNT} GPU. Utilizzo di tutte le GPU disponibili.")
+        DEVICE = torch.device("cuda")
+        USE_MULTI_GPU = True
+    else:
+        print("Trovata 1 GPU. Utilizzo della singola GPU.")
+        DEVICE = torch.device("cuda")
+        USE_MULTI_GPU = False
+else:
+    print("Nessuna GPU trovata. Utilizzo della CPU.")
+    DEVICE = torch.device("cpu")
+    USE_MULTI_GPU = False
 
 # Numero di client in federated learning
 NUM_CLIENTS = 10

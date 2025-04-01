@@ -22,7 +22,7 @@ def main():
         # 2) Creiamo i client Flower
         clients = []
         for i in range(NUM_CLIENTS):
-            model = LocalMNISTModel().to(DEVICE)
+            model = LocalMNISTModel().to_device()
             client = FlowerClient(model, client_loaders[i], val_loader)
             clients.append(client)
         

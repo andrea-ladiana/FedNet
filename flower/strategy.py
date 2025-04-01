@@ -11,8 +11,8 @@ class RLStrategy(fl.server.strategy.FedAvg):
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.aggregator_net = AggregatorNet().to(DEVICE)
-        self.value_net = ValueNet().to(DEVICE)
+        self.aggregator_net = AggregatorNet().to_device()
+        self.value_net = ValueNet().to_device()
         self.optimizer = torch.optim.Adam([
             {'params': self.aggregator_net.parameters(), 'lr': 1e-3},
             {'params': self.value_net.parameters(), 'lr': 1e-3}

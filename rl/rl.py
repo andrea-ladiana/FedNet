@@ -38,7 +38,7 @@ def rl_update_step(aggregator_net, value_net, optimizer, client_features, reward
     # 1. Otteniamo i parametri alpha e campioniamo i pesi
     alpha_params, _, _ = aggregator_net(client_features)
     dist = torch.distributions.dirichlet.Dirichlet(alpha_params)
-    w = dist.rsample()
+    w = dist.rsample() # Differentiable sampling
     log_prob = dist.log_prob(w)
     
     # 2. Stimiamo i valori attesi

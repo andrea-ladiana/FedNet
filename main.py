@@ -3,6 +3,7 @@ import torch.optim as optim
 import sys
 import traceback
 import numpy as np
+import torch.nn.functional as F
 
 from config.settings import (
     DEVICE, NUM_CLIENTS, LOCAL_EPOCHS, GLOBAL_ROUNDS,
@@ -71,16 +72,16 @@ def main_federated_rl_example():
         # 2) Inizializziamo i modelli locali
         try:
             print("Inizializzazione dei modelli locali...")
-            local_models = [LocalMNISTModel().to(DEVICE) for _ in range(NUM_CLIENTS)]
-            global_model = LocalMNISTModel().to(DEVICE)  # Modello globale
+            local_models = [LocalMNISTModel().to_device() for _ in range(NUM_CLIENTS)]
+            global_model = LocalMNISTModel().to_device()  # Modello globale
         except Exception as e:
             raise ModelError(f"Errore nell'inizializzazione dei modelli: {str(e)}")
         
         # 3) Inizializziamo la rete di aggregazione e la value net
         try:
             print("Inizializzazione delle reti di aggregazione...")
-            aggregator_net = AggregatorNet().to(DEVICE)
-            value_net = ValueNet().to(DEVICE)
+            aggregator_net = AggregatorNet().to_device()
+            value_net = ValueNet().to_device()
             optimizer = optim.Adam([
                 {'params': aggregator_net.parameters(), 'lr': LR_AGGREGATOR},
                 {'params': value_net.parameters(), 'lr': LR_AGGREGATOR}
@@ -220,6 +221,311 @@ def main_federated_rl_example():
         # Chiudiamo il logger
         logger.close()
 
+def update_networks_from_experience(aggregator_net, value_net, optimizer, experience_buffer, logger=None):
+    """
+    Aggiorna le reti di aggregazione utilizzando l'esperienza raccolta da più esperimenti.
+    Implementa un approccio di apprendimento per rinforzo batch, simile al replay buffer in DQN.
+    
+    Args:
+        aggregator_net: La rete di aggregazione da aggiornare
+        value_net: La rete di valore da aggiornare
+        optimizer: L'ottimizzatore per entrambe le reti
+        experience_buffer: Buffer contenente stati, pesi e reward da vari esperimenti
+        logger: Opzionale, per loggare metriche
+        
+    Returns:
+        dict: Dizionario contenente le metriche di training
+    """
+    try:
+        # Convertiamo i buffer in tensori
+        states = torch.stack(experience_buffer['states'])
+        weights = torch.stack(experience_buffer['weights'])
+        rewards = torch.tensor(experience_buffer['rewards'], device=DEVICE)
+        
+        # Calcoliamo il vantaggio medio (rewards - expected_values)
+        with torch.no_grad():
+            predicted_values = torch.cat([value_net(s).unsqueeze(0) for s in states])
+            advantages = rewards - predicted_values
+        
+        # Eseguiamo più epoche di aggiornamento
+        num_epochs = 5
+        batch_size = min(16, len(states))
+        num_samples = states.size(0)
+        
+        avg_policy_loss = 0
+        avg_value_loss = 0
+        
+        print(f"Aggiornamento reti con {num_samples} esempi di esperienza")
+        
+        for epoch in range(num_epochs):
+            # Mescoliamo i dati per evitare correlazioni nell'apprendimento
+            indices = torch.randperm(num_samples)
+            
+            for start_idx in range(0, num_samples, batch_size):
+                # Estraiamo mini-batch
+                end_idx = min(start_idx + batch_size, num_samples)
+                batch_indices = indices[start_idx:end_idx]
+                batch_states = states[batch_indices]
+                batch_weights = weights[batch_indices]
+                batch_rewards = rewards[batch_indices]
+                batch_advantages = advantages[batch_indices]
+                
+                # Policy loss e Value loss per ogni esempio nel batch
+                policy_losses = []
+                value_losses = []
+                
+                for i in range(len(batch_indices)):
+                    s = batch_states[i]
+                    w = batch_weights[i]
+                    adv = batch_advantages[i]
+                    
+                    # Forward pass attraverso la rete di aggregazione
+                    alpha_params, _, _ = aggregator_net(s)
+                    dist = torch.distributions.dirichlet.Dirichlet(alpha_params)
+                    log_prob = dist.log_prob(w)
+                    
+                    # Policy gradient loss (REINFORCE con advantage)
+                    policy_losses.append(-log_prob * adv.detach())
+                    
+                    # Value loss (MSE tra valore predetto e reward reale)
+                    value = value_net(s)
+                    value_losses.append(F.mse_loss(value, batch_rewards[i]))
+                
+                # Calcoliamo le loss medie sul batch
+                policy_loss = torch.stack(policy_losses).mean()
+                value_loss = torch.stack(value_losses).mean()
+                total_loss = policy_loss + 0.5 * value_loss
+                
+                # Aggiorniamo le reti con backpropagation
+                optimizer.zero_grad()
+                total_loss.backward()
+                optimizer.step()
+                
+                avg_policy_loss += policy_loss.item()
+                avg_value_loss += value_loss.item()
+        
+        # Calcoliamo le metriche medie
+        num_batches = (num_samples + batch_size - 1) // batch_size * num_epochs
+        avg_policy_loss /= num_batches
+        avg_value_loss /= num_batches
+        
+        metrics = {
+            'policy_loss': avg_policy_loss,
+            'value_loss': avg_value_loss,
+            'total_loss': avg_policy_loss + 0.5 * avg_value_loss,
+            'advantage_mean': advantages.mean().item(),
+            'advantage_std': advantages.std().item()
+        }
+        
+        # Loggiamo le metriche se è stato fornito un logger
+        if logger:
+            logger.log_metrics(metrics)
+            
+        print(f"  [BATCH] Total Loss = {metrics['total_loss']:.4f}")
+        print(f"  [BATCH] Policy Loss = {metrics['policy_loss']:.4f}")
+        print(f"  [BATCH] Value Loss = {metrics['value_loss']:.4f}")
+        
+        return metrics
+        
+    except Exception as e:
+        print(f"Errore nell'aggiornamento delle reti: {str(e)}")
+        traceback.print_exc()
+        return {'policy_loss': 0, 'value_loss': 0, 'total_loss': 0}
+
+def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval=2):
+    """
+    Allena l'AggregatorNet su più esperimenti indipendenti, seguendo
+    un approccio simile ad AlphaZero/AlphaGo dove un modello impara
+    da molteplici partite/esecuzioni indipendenti.
+    
+    Args:
+        num_experiments: Numero di esperimenti indipendenti da eseguire
+        save_interval: Ogni quanti esperimenti salvare e aggiornare le reti master
+        
+    Returns:
+        tuple: (master_aggregator_net, master_value_net) le reti allenate
+        
+    Raises:
+        FedNetError: Se ci sono problemi durante l'esecuzione
+    """
+    # Inizializziamo il logger principale
+    logger = FederatedLogger()
+    
+    try:
+        print(f"Inizializzazione del training federato multi-esperimento ({num_experiments} esperimenti)...")
+        
+        # 1) Inizializziamo le reti master persistenti che impareranno da tutti gli esperimenti
+        try:
+            print("Inizializzazione delle reti master...")
+            master_aggregator_net = AggregatorNet().to_device()
+            master_value_net = ValueNet().to_device()
+            master_optimizer = optim.Adam([
+                {'params': master_aggregator_net.parameters(), 'lr': LR_AGGREGATOR},
+                {'params': master_value_net.parameters(), 'lr': LR_AGGREGATOR}
+            ])
+        except Exception as e:
+            raise ModelError(f"Errore nell'inizializzazione delle reti master: {str(e)}")
+        
+        # 2) Creiamo un buffer di esperienza condiviso tra tutti gli esperimenti
+        experience_buffer = {
+            'states': [],   # Feature dei client (score)
+            'weights': [],  # Pesi di aggregazione scelti
+            'rewards': []   # Reward ottenuti (accuratezza)
+        }
+        
+        # 3) Eseguiamo più esperimenti indipendenti
+        for exp_idx in range(num_experiments):
+            print(f"\n=== ESPERIMENTO {exp_idx+1}/{num_experiments} ===")
+            
+            # Creiamo un logger per l'esperimento corrente
+            exp_logger = FederatedLogger(sub_dir=f"experiment_{exp_idx+1}")
+            
+            try:
+                # 3.1) Carichiamo i dataloader (diversi per ogni esperimento)
+                print("Caricamento del dataset MNIST...")
+                train_loaders, test_loaders = split_dataset_mnist(num_clients=NUM_CLIENTS)
+                val_loader = get_validation_loader()
+                
+                # 3.2) Inizializziamo nuovi modelli client per questo esperimento
+                print("Inizializzazione dei modelli locali per questo esperimento...")
+                local_models = [LocalMNISTModel().to_device() for _ in range(NUM_CLIENTS)]
+                global_model = LocalMNISTModel().to_device()
+                
+                # 3.3) Inizializziamo l'aggregatore
+                aggregator = FedAvgAggregator(global_model)
+                
+                # 3.4) Ground truth per exclude_flag (per training supervisionato)
+                exclude_true = torch.randint(0, 2, (NUM_CLIENTS,)).float().to(DEVICE)
+                
+                # 3.5) Lista dei reward per questo esperimento specifico
+                experiment_rewards = []
+                
+                # 3.6) Eseguiamo i round federati per questo esperimento
+                for round_idx in range(GLOBAL_ROUNDS):
+                    print(f"\n--- Round {round_idx+1}/{GLOBAL_ROUNDS} dell'Esperimento {exp_idx+1} ---")
+                    
+                    # (A) Training locale di ciascun client
+                    for i in range(NUM_CLIENTS):
+                        try:
+                            print(f"Training locale del client {i+1}/{NUM_CLIENTS}...")
+                            train_local_model(local_models[i], train_loaders[i], epochs=LOCAL_EPOCHS)
+                        except ModelError as e:
+                            print(f"Errore nel training del client {i}: {str(e)}")
+                            continue
+                    
+                    # (B) Calcoliamo gli score dei client
+                    try:
+                        scores = compute_scores(local_models, global_model, test_loaders)
+                    except Exception as e:
+                        raise ClientError(f"Errore nel calcolo degli score: {str(e)}")
+                    
+                    # (C) Utilizziamo master_aggregator_net per ottenere i pesi
+                    try:
+                        master_aggregator_net.eval()
+                        with torch.no_grad():
+                            alpha_params, exclude_pred, client_scores = master_aggregator_net(scores)
+                            # Campioniamo un vettore di pesi dalla Dirichlet
+                            dist = torch.distributions.dirichlet.Dirichlet(alpha_params)
+                            w = dist.sample()
+                            w = w / w.sum()  # normalizziamo
+                            
+                            # Se exclude_pred[i] > 0.5, escludiamo il client i
+                            for i in range(NUM_CLIENTS):
+                                if exclude_pred[i] > 0.5:
+                                    w[i] = 0.0
+                            
+                            # Aggiungiamo un valore minimo per evitare divisione per zero
+                            w = w / (w.sum() + 1e-8)  # rinormalizziamo
+                            
+                            # Loggiamo i parametri e le predizioni
+                            exp_logger.log_alpha_params(alpha_params)
+                            exp_logger.log_weights(w)
+                            exp_logger.log_exclude_flags(exclude_pred)
+                            exp_logger.log_client_scores(client_scores)
+                    except Exception as e:
+                        raise RLError(f"Errore nell'ottenimento dei pesi di aggregazione: {str(e)}")
+                    
+                    # (D) Aggreghiamo i modelli usando i pesi
+                    try:
+                        aggregator.aggregate(local_models, w)
+                    except AggregationError as e:
+                        print(f"Errore nell'aggregazione dei modelli: {str(e)}")
+                        continue
+                    
+                    # (E) Calcoliamo la reward come accuratezza su validation
+                    try:
+                        reward = evaluate_model(global_model, val_loader)
+                        print(f"Reward (accuracy) = {reward:.4f}")
+                        exp_logger.log_metrics({'reward': reward})
+                        experiment_rewards.append(reward)
+                    except Exception as e:
+                        raise ModelError(f"Errore nella valutazione del modello: {str(e)}")
+                    
+                    # (F) Salvataggio dell'esperienza nel buffer condiviso
+                    experience_buffer['states'].append(scores.detach().clone())
+                    experience_buffer['weights'].append(w.detach().clone())
+                    experience_buffer['rewards'].append(reward)
+                
+                # 3.7) Valutazione finale del modello aggregato per questo esperimento
+                try:
+                    final_acc = evaluate_model(global_model, val_loader)
+                    print(f"\nAccuratezza finale dell'Esperimento {exp_idx+1} = {final_acc:.4f}")
+                    exp_logger.log_metrics({'final_accuracy': final_acc})
+                    logger.log_metrics({f'exp_{exp_idx+1}_final_accuracy': final_acc})
+                except Exception as e:
+                    print(f"Errore nella valutazione finale dell'esperimento {exp_idx+1}: {str(e)}")
+                
+                # Chiudiamo il logger dell'esperimento
+                exp_logger.close()
+                
+            except Exception as e:
+                print(f"Errore nell'esperimento {exp_idx+1}: {str(e)}")
+                continue
+            
+            # 3.8) Aggiornamento delle reti master con l'esperienza raccolta
+            if (exp_idx + 1) % save_interval == 0 or exp_idx == num_experiments - 1:
+                print("\nAggiornamento reti master con l'esperienza raccolta...")
+                update_networks_from_experience(
+                    master_aggregator_net,
+                    master_value_net,
+                    master_optimizer,
+                    experience_buffer,
+                    logger
+                )
+                
+                # Salviamo le reti master ogni save_interval esperimenti
+                torch.save(master_aggregator_net.state_dict(), 
+                          f'models/master_aggregator_net_exp{exp_idx+1}.pt')
+                torch.save(master_value_net.state_dict(), 
+                          f'models/master_value_net_exp{exp_idx+1}.pt')
+                
+                # Svuotiamo parzialmente il buffer (manteniamo gli ultimi esempi)
+                keep_last = min(50, len(experience_buffer['states']))
+                experience_buffer['states'] = experience_buffer['states'][-keep_last:]
+                experience_buffer['weights'] = experience_buffer['weights'][-keep_last:]
+                experience_buffer['rewards'] = experience_buffer['rewards'][-keep_last:]
+        
+        # 4) Salviamo le reti master finali
+        print("\nSalvataggio dei modelli finali...")
+        torch.save(master_aggregator_net.state_dict(), 'models/master_aggregator_net_final.pt')
+        torch.save(master_value_net.state_dict(), 'models/master_value_net_final.pt')
+        
+        print("\n=== Fine training federato multi-esperimento ===")
+        
+        return master_aggregator_net, master_value_net
+        
+    except FedNetError as e:
+        print(f"Errore critico nel training federato: {str(e)}")
+        traceback.print_exc()
+        sys.exit(1)
+    except Exception as e:
+        print(f"Errore imprevisto: {str(e)}")
+        traceback.print_exc()
+        sys.exit(1)
+    finally:
+        # Chiudiamo il logger principale
+        logger.close()
+
 def train_federated(model, train_dataloaders, test_dataloader, 
                    num_rounds=10, local_epochs=5, learning_rate=0.01,
                    weights=None):
@@ -332,35 +638,7 @@ def train_federated(model, train_dataloaders, test_dataloader,
         raise ModelError(f"Errore imprevisto nel training federato: {str(e)}")
 
 if __name__ == "__main__":
-    try:
-        print("Inizializzazione del training federato...")
-        
-        # Carichiamo i dataloader dei client
-        try:
-            print("Caricamento del dataset MNIST...")
-            train_loaders, test_loaders = split_dataset_mnist()
-            val_loader = get_validation_loader()
-        except DataError as e:
-            print(f"Errore nel caricamento dei dati: {str(e)}")
-            sys.exit(1)
-        
-        # Inizializziamo il modello globale
-        try:
-            print("Inizializzazione del modello globale...")
-            global_model = LocalMNISTModel().to(DEVICE)
-        except Exception as e:
-            print(f"Errore nell'inizializzazione del modello: {str(e)}")
-            sys.exit(1)
-        
-        # Eseguiamo il training federato
-        try:
-            train_federated(global_model, train_loaders, val_loader)
-        except FedNetError as e:
-            print(f"Errore durante il training federato: {str(e)}")
-            traceback.print_exc()
-            sys.exit(1)
-            
-    except Exception as e:
-        print(f"Errore imprevisto: {str(e)}")
-        traceback.print_exc()
-        sys.exit(1)
+    print("Avvio del training federato multi-esperimento...")
+    # Modifica: eseguiamo il training con approccio multi-esperimento
+    # main_federated_rl_example()
+    train_aggregator_with_multiple_experiments(num_experiments=10, save_interval=2)
