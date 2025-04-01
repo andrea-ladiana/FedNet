@@ -19,7 +19,7 @@ else:
     USE_MULTI_GPU = False
 
 # Numero di client in federated learning
-NUM_CLIENTS = 20
+NUM_CLIENTS = 10
 
 # Dimensioni degli score
 NUM_SCORES = 6  # [trustworthiness, hardware, data, similarity, contribution, performance]
@@ -56,11 +56,11 @@ MNIST_TEST_SIZE = 10000
 
 # Parametri di attacco
 ATTACK_FRACTION = 0.2  # Frazione di client attaccati in ogni round
-NOISE_STD = 0.4       # Deviazione standard del rumore gaussiano per il data poisoning
+NOISE_STD = 1.0       # Deviazione standard del rumore gaussiano per il data poisoning
 
 # Parametri di distribuzione dei dati
-UNIFORM_MIN = 0.8    # Estremo inferiore per la distribuzione uniforme dei dati
-UNIFORM_MAX = 1.2    # Estremo superiore per la distribuzione uniforme dei dati
+UNIFORM_MIN = 1.0    # Estremo inferiore per la distribuzione uniforme dei dati
+UNIFORM_MAX = 1.0    # Estremo superiore per la distribuzione uniforme dei dati
 
 # Parametri di fallimento dei client
 CLIENT_FAILURE_PROB = 0.10  # Probabilità di fallimento di un client in un round
@@ -79,7 +79,7 @@ LR_FACTOR = 0.5      # Fattore di riduzione del learning rate
 LR_THRESHOLD = 0.01  # Soglia minima di miglioramento
 
 # Parametri di ottimizzazione GPU
-NUM_WORKERS = 8       # Numero di worker per il caricamento dei dati
+NUM_WORKERS = 4       # Numero di worker per il caricamento dei dati
 PIN_MEMORY = True     # Abilita pin_memory per il trasferimento più veloce alla GPU
 PREFETCH_FACTOR = 2   # Numero di batch da precaricare per worker
 
