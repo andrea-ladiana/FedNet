@@ -12,6 +12,10 @@ class FederatedLogger:
             project_name: Nome del progetto in wandb
             run_name: Nome opzionale dell'esecuzione
         """
+        # Chiudiamo eventuali sessioni wandb esistenti
+        if wandb.run is not None:
+            wandb.finish()
+            
         # Inizializza wandb
         self.run = wandb.init(
             project=project_name,
@@ -20,7 +24,8 @@ class FederatedLogger:
                 "log_dir": LOG_DIR,
                 "sub_dir": sub_dir
             },
-            reinit=True
+            reinit=True,
+            mode="online"  # Forziamo la modalità online
         )
         self.step = 0
         
@@ -98,4 +103,5 @@ class FederatedLogger:
         """
         Chiude la sessione wandb.
         """
-        wandb.finish() 
+        if wandb.run is not None:
+            wandb.finish() 
