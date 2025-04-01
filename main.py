@@ -268,6 +268,9 @@ def update_networks_from_experience(aggregator_net, value_net, optimizer, experi
         
         print(f"Aggiornamento reti con {num_samples} esempi di esperienza")
         
+        MAX_GRAD_NORM = 1.0 # Valore tipico per gradient clipping
+        LOG_PROB_EPSILON = 1e-9 # Epsilon per stabilizzare log_prob
+        
         for epoch in range(num_epochs):
             # Mescoliamo i dati per evitare correlazioni nell'apprendimento
             indices = torch.randperm(num_samples)
@@ -284,6 +287,7 @@ def update_networks_from_experience(aggregator_net, value_net, optimizer, experi
                 # Policy loss e Value loss per ogni esempio nel batch
                 policy_losses = []
                 value_losses = []
+                skipped_samples = 0
                 
                 for i in range(len(batch_indices)):
                     s = batch_states[i]
@@ -292,8 +296,43 @@ def update_networks_from_experience(aggregator_net, value_net, optimizer, experi
                     
                     # Forward pass attraverso la rete di aggregazione
                     alpha_params, _, _ = aggregator_net(s)
-                    dist = torch.distributions.dirichlet.Dirichlet(alpha_params)
-                    log_prob = dist.log_prob(w)
+                    
+                    # ---> CONTROLLO NaN IN ALPHA_PARAMS <---
+                    if torch.isnan(alpha_params).any():
+                        print(f"ERROR: NaN rilevato in alpha_params per batch item {i} all'epoca {epoch}. Salto questo campione.")
+                        print(f"  alpha_params: {alpha_params}")
+                        skipped_samples += 1
+                        continue # Salta questo campione
+                    # ---> FINE CONTROLLO <---
+                    
+                    try:
+                        # Usiamo clamp per essere sicuri che alpha > 0 per Dirichlet
+                        alpha_params_clamped = torch.clamp_min(alpha_params, min=1e-6)
+                        dist = torch.distributions.dirichlet.Dirichlet(alpha_params_clamped)
+                    except ValueError as e:
+                        print(f"ERROR creazione Dirichlet per batch item {i}, epoca {epoch}: {e}")
+                        print(f"  alpha_params: {alpha_params}")
+                        print(f"  alpha_params_clamped: {alpha_params_clamped}")
+                        skipped_samples += 1
+                        continue # Salta questo campione
+
+                    # ---> STABILIZZAZIONE log_prob <---
+                    w_stable = w + LOG_PROB_EPSILON
+                    w_stable = w_stable / w_stable.sum() # Ri-normalizza dopo epsilon
+                    log_prob = dist.log_prob(w_stable)
+                    # ---> FINE STABILIZZAZIONE <---
+                    
+                    # ---> CONTROLLO NaN/inf IN log_prob <---
+                    if torch.isnan(log_prob).any() or torch.isinf(log_prob).any():
+                        print(f"WARNING: NaN/inf rilevato in log_prob per batch item {i}, epoca {epoch}")
+                        print(f"  alpha_params: {alpha_params}")
+                        print(f"  w: {w}")
+                        print(f"  w_stable: {w_stable}")
+                        print(f"  log_prob: {log_prob}")
+                        # Applica clamping invece di saltare per ora
+                        log_prob = torch.clamp(log_prob, min=-1e6, max=1e6) 
+                        print(f"  log_prob clampato: {log_prob}")
+                    # ---> FINE CONTROLLO <---
                     
                     # Policy gradient loss (REINFORCE con advantage)
                     policy_losses.append(-log_prob * adv.detach())
@@ -302,24 +341,67 @@ def update_networks_from_experience(aggregator_net, value_net, optimizer, experi
                     value = value_net(s)
                     value_losses.append(F.mse_loss(value, batch_rewards[i]))
                 
+                # Se non ci sono loss valide nel batch, saltalo
+                if not policy_losses or not value_losses:
+                    print(f"WARNING: Nessun campione valido nel batch a partire da indice {start_idx}, epoca {epoch}. Salto l'aggiornamento.")
+                    continue
+                
                 # Calcoliamo le loss medie sul batch
                 policy_loss = torch.stack(policy_losses).mean()
                 value_loss = torch.stack(value_losses).mean()
                 total_loss = policy_loss + 0.5 * value_loss
                 
+                # ---> CONTROLLO NaN IN LOSS <---
+                if torch.isnan(total_loss):
+                    print(f"ERROR: NaN rilevato nella total_loss per batch a partire da indice {start_idx}, epoca {epoch}. Salto l'aggiornamento.")
+                    print(f"  policy_loss: {policy_loss}, value_loss: {value_loss}")
+                    continue
+                # ---> FINE CONTROLLO <---
+                
                 # Aggiorniamo le reti con backpropagation
                 optimizer.zero_grad()
                 total_loss.backward()
+                
+                # ---> GRADIENT CLIPPING <---
+                torch.nn.utils.clip_grad_norm_(aggregator_net.parameters(), max_norm=MAX_GRAD_NORM)
+                torch.nn.utils.clip_grad_norm_(value_net.parameters(), max_norm=MAX_GRAD_NORM)
+                # ---> FINE GRADIENT CLIPPING <---
+                
                 optimizer.step()
+
+                # ---> CONTROLLO PESI RETE POST-UPDATE <---
+                nan_detected_agg = False
+                for name, param in aggregator_net.named_parameters():
+                    if param.grad is not None and torch.isnan(param.grad).any():
+                         print(f"ERROR: NaN rilevato nei gradienti di {name} in aggregator_net dopo backward!")
+                    if torch.isnan(param.data).any():
+                        print(f"ERROR: NaN rilevato nei dati del parametro {name} in aggregator_net DOPO optimizer.step()!")
+                        nan_detected_agg = True
+                
+                nan_detected_val = False
+                for name, param in value_net.named_parameters():
+                    if param.grad is not None and torch.isnan(param.grad).any():
+                         print(f"ERROR: NaN rilevato nei gradienti di {name} in value_net dopo backward!")
+                    if torch.isnan(param.data).any():
+                        print(f"ERROR: NaN rilevato nei dati del parametro {name} in value_net DOPO optimizer.step()!")
+                        nan_detected_val = True
+                        
+                if nan_detected_agg or nan_detected_val:
+                    raise RuntimeError("NaN detectato nei pesi della rete dopo l'aggiornamento. Training instabile.")
+                # ---> FINE CONTROLLO PESI RETE <---
                 
                 avg_policy_loss += policy_loss.item()
                 avg_value_loss += value_loss.item()
         
         # Calcoliamo le metriche medie
-        num_batches = (num_samples + batch_size - 1) // batch_size * num_epochs
-        avg_policy_loss /= num_batches
-        avg_value_loss /= num_batches
-        
+        num_valid_batches = (num_samples - skipped_samples + batch_size - 1) // batch_size * num_epochs
+        if num_valid_batches > 0:
+             avg_policy_loss /= num_valid_batches
+             avg_value_loss /= num_valid_batches
+        else:
+            avg_policy_loss = float('nan') # Nessun batch valido
+            avg_value_loss = float('nan')
+            
         metrics = {
             'policy_loss': avg_policy_loss,
             'value_loss': avg_value_loss,
@@ -341,7 +423,7 @@ def update_networks_from_experience(aggregator_net, value_net, optimizer, experi
     except Exception as e:
         print(f"Errore nell'aggiornamento delle reti: {str(e)}")
         traceback.print_exc()
-        return {'policy_loss': 0, 'value_loss': 0, 'total_loss': 0}
+        return {'policy_loss': float('nan'), 'value_loss': float('nan'), 'total_loss': float('nan')}
 
 def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval=2):
     """
