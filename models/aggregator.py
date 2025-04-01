@@ -101,6 +101,10 @@ class AggregatorNet(BaseModel):
         """
         batch_size = x.size(0)
         
+        # Verifichiamo che il numero di client nell'input corrisponda a quello atteso
+        if batch_size != self.num_clients:
+            print(f"Warning: Numero di client nell'input ({batch_size}) diverso da quello atteso ({self.num_clients})")
+        
         # Codifica separata per ogni client
         encoded = self.score_encoder(x)  # (num_clients, hidden_dim)
         
@@ -129,16 +133,19 @@ class AggregatorNet(BaseModel):
         # Ci assicuriamo che l'output abbia la dimensione corretta
         # Se i parametri hanno dimensione diversa da num_clients, li ridimensioniamo
         if len(alpha_params) != self.num_clients:
+            print(f"Warning: Ridimensionamento dei parametri alpha da {len(alpha_params)} a {self.num_clients}")
             new_alpha = torch.ones(self.num_clients, device=alpha_params.device) * 1e-3
             new_alpha[:min(len(alpha_params), self.num_clients)] = alpha_params[:min(len(alpha_params), self.num_clients)]
             alpha_params = new_alpha
             
         if len(exclude_flag) != self.num_clients:
+            print(f"Warning: Ridimensionamento dei flag di esclusione da {len(exclude_flag)} a {self.num_clients}")
             new_exclude = torch.zeros(self.num_clients, device=exclude_flag.device)
             new_exclude[:min(len(exclude_flag), self.num_clients)] = exclude_flag[:min(len(exclude_flag), self.num_clients)]
             exclude_flag = new_exclude
             
         if len(client_score) != self.num_clients:
+            print(f"Warning: Ridimensionamento degli score da {len(client_score)} a {self.num_clients}")
             new_score = torch.zeros(self.num_clients, device=client_score.device)
             new_score[:min(len(client_score), self.num_clients)] = client_score[:min(len(client_score), self.num_clients)]
             client_score = new_score

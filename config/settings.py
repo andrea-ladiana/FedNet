@@ -19,7 +19,7 @@ else:
     USE_MULTI_GPU = False
 
 # Numero di client in federated learning
-NUM_CLIENTS = 10
+NUM_CLIENTS = 20
 
 # Dimensioni degli score
 NUM_SCORES = 6  # [trustworthiness, hardware, data, similarity, contribution, performance]
