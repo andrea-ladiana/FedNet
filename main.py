@@ -400,6 +400,7 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                 # 3.2) Inizializziamo nuovi modelli client per questo esperimento
                 print("Inizializzazione dei modelli locali per questo esperimento...")
                 local_models = [LocalMNISTModel().to_device() for _ in range(NUM_CLIENTS)]
+                print(f"DEBUG - Numero di modelli client creati: {len(local_models)}")
                 global_model = LocalMNISTModel().to_device()
                 
                 # 3.3) Inizializziamo l'aggregatore
@@ -427,6 +428,7 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                     # (B) Calcoliamo gli score dei client
                     try:
                         scores = compute_scores(local_models, global_model, test_loaders)
+                        print(f"DEBUG - Dimensione degli score calcolati: {scores.shape}")
                     except Exception as e:
                         raise ClientError(f"Errore nel calcolo degli score: {str(e)}")
                     
@@ -434,16 +436,42 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                     try:
                         master_aggregator_net.eval()
                         with torch.no_grad():
+                            # Stampiamo le dimensioni di scores per debug
+                            print(f"DEBUG - Dimensione di scores: {scores.shape}")
+                            
                             alpha_params, exclude_pred, client_scores = master_aggregator_net(scores)
+                            
+                            # Stampiamo le dimensioni per debug
+                            print(f"DEBUG - Dimensione di alpha_params: {alpha_params.shape}")
+                            print(f"DEBUG - Dimensione di exclude_pred: {exclude_pred.shape}")
+                            
+                            # Verifichiamo che alpha_params abbia dimensione esattamente NUM_CLIENTS
+                            if len(alpha_params) != NUM_CLIENTS:
+                                print(f"CORREZIONE - Ridimensionamento di alpha_params da {len(alpha_params)} a {NUM_CLIENTS}")
+                                new_alpha = torch.ones(NUM_CLIENTS, device=alpha_params.device) * 1e-3
+                                new_alpha[:min(len(alpha_params), NUM_CLIENTS)] = alpha_params[:min(len(alpha_params), NUM_CLIENTS)]
+                                alpha_params = new_alpha
+                            
                             # Campioniamo un vettore di pesi dalla Dirichlet
                             dist = torch.distributions.dirichlet.Dirichlet(alpha_params)
                             w = dist.sample()
+                            
+                            # Stampiamo le dimensioni per debug
+                            print(f"DEBUG - Dimensione di w (pesi): {w.shape}")
                             
                             # Verifichiamo che i pesi siano validi
                             if torch.any(w <= 0):
                                 w = torch.clamp(w, min=1e-3)
                                 
                             w = w / w.sum()  # normalizziamo
+                            
+                            # Verifichiamo che i pesi abbiano dimensione esattamente NUM_CLIENTS
+                            if len(w) != NUM_CLIENTS:
+                                print(f"CORREZIONE - Ridimensionamento dei pesi da {len(w)} a {NUM_CLIENTS}")
+                                new_w = torch.ones(NUM_CLIENTS, device=w.device) / NUM_CLIENTS
+                                new_w[:min(len(w), NUM_CLIENTS)] = w[:min(len(w), NUM_CLIENTS)]
+                                w = new_w
+                                w = w / w.sum()  # rinormalizziamo
                             
                             # Se exclude_pred[i] > 0.5, escludiamo il client i
                             for i in range(NUM_CLIENTS):
@@ -456,6 +484,9 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                             else:
                                 # Se tutti i client sono stati esclusi, usiamo pesi uniformi
                                 w = torch.ones(NUM_CLIENTS, device=w.device) / NUM_CLIENTS
+                            
+                            # Stampiamo le dimensioni finali per debug
+                            print(f"DEBUG - Dimensione finale di w (pesi): {w.shape}")
                             
                             # Loggiamo i parametri e le predizioni
                             exp_logger.log_alpha_params(alpha_params)
