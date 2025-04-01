@@ -134,13 +134,24 @@ def main_federated_rl_example():
                         # Campioniamo un vettore di pesi dalla Dirichlet
                         dist = torch.distributions.dirichlet.Dirichlet(alpha_params)
                         w = dist.sample()
+                        
+                        # Verifichiamo che i pesi siano validi
+                        if torch.any(w <= 0):
+                            w = torch.clamp(w, min=1e-3)
+                            
                         w = w / w.sum()  # normalizziamo
                         
                         # Se exclude_pred[i] > 0.5, escludiamo il client i
                         for i in range(NUM_CLIENTS):
                             if exclude_pred[i] > 0.5:
                                 w[i] = 0.0
-                        w = w / w.sum()  # rinormalizziamo dopo l'esclusione
+                                
+                        # Verifichiamo che ci siano ancora pesi validi dopo l'esclusione
+                        if w.sum() > 0:
+                            w = w / w.sum()  # rinormalizziamo dopo l'esclusione
+                        else:
+                            # Se tutti i client sono stati esclusi, usiamo pesi uniformi
+                            w = torch.ones(NUM_CLIENTS, device=w.device) / NUM_CLIENTS
                         
                         # Loggiamo i parametri e le predizioni
                         logger.log_alpha_params(alpha_params)
@@ -427,15 +438,24 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                             # Campioniamo un vettore di pesi dalla Dirichlet
                             dist = torch.distributions.dirichlet.Dirichlet(alpha_params)
                             w = dist.sample()
+                            
+                            # Verifichiamo che i pesi siano validi
+                            if torch.any(w <= 0):
+                                w = torch.clamp(w, min=1e-3)
+                                
                             w = w / w.sum()  # normalizziamo
                             
                             # Se exclude_pred[i] > 0.5, escludiamo il client i
                             for i in range(NUM_CLIENTS):
                                 if exclude_pred[i] > 0.5:
                                     w[i] = 0.0
-                            
-                            # Aggiungiamo un valore minimo per evitare divisione per zero
-                            w = w / (w.sum() + 1e-8)  # rinormalizziamo
+                                    
+                            # Verifichiamo che ci siano ancora pesi validi dopo l'esclusione
+                            if w.sum() > 0:
+                                w = w / w.sum()  # rinormalizziamo dopo l'esclusione
+                            else:
+                                # Se tutti i client sono stati esclusi, usiamo pesi uniformi
+                                w = torch.ones(NUM_CLIENTS, device=w.device) / NUM_CLIENTS
                             
                             # Loggiamo i parametri e le predizioni
                             exp_logger.log_alpha_params(alpha_params)

@@ -143,6 +143,10 @@ class AggregatorNet(BaseModel):
             new_score[:min(len(client_score), self.num_clients)] = client_score[:min(len(client_score), self.num_clients)]
             client_score = new_score
         
+        # Verifichiamo che i pesi siano validi per la distribuzione Dirichlet
+        if torch.any(alpha_params <= 0):
+            alpha_params = torch.clamp(alpha_params, min=1e-3)
+        
         return alpha_params, exclude_flag, client_score
 
 class FedAvgAggregator:
