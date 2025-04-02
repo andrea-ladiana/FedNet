@@ -126,11 +126,33 @@ def compute_data_quality():
         if isinstance(batch_y, torch.Tensor):
             batch_y = batch_y.numpy()
             
-        # Verifichiamo che i dati siano 2D
-        if batch_X.ndim == 1:
+        # Gestiamo il caso in cui X è nel formato (batch_size, channels, height, width)
+        if batch_X.ndim == 4:
+            # Reshape in (batch_size, n_features)
+            batch_size = batch_X.shape[0]
+            # Assicuriamoci che l'ordine delle dimensioni sia corretto
+            if batch_X.shape[1] == 1:  # Se è un'immagine in scala di grigi
+                batch_X = batch_X.squeeze(1)  # Rimuoviamo il canale
+            batch_X = batch_X.reshape(batch_size, -1)
+        elif batch_X.ndim == 1:
             batch_X = batch_X.reshape(1, -1)
-        if batch_y.ndim == 1:
+        elif batch_X.ndim == 2:
+            # Se è già 2D, verifichiamo che sia nel formato corretto
+            if batch_X.shape[1] != 784:  # MNIST ha 784 features
+                print(f"⚠️ Attenzione: numero di features inatteso: {batch_X.shape[1]}")
+            
+        # Assicuriamoci che y sia 1D
+        if batch_y.ndim > 1:
             batch_y = batch_y.reshape(-1)
+            
+        # Verifichiamo che i valori siano nel range corretto
+        if np.any(batch_X < 0) or np.any(batch_X > 255):
+            print("⚠️ Attenzione: valori di X fuori range [0,255]")
+            batch_X = np.clip(batch_X, 0, 255)
+            
+        if np.any(batch_y < 0) or np.any(batch_y > 9):
+            print("⚠️ Attenzione: valori di y fuori range [0,9]")
+            batch_y = np.clip(batch_y, 0, 9)
             
         X_list.append(batch_X)
         y_list.append(batch_y)
@@ -142,10 +164,17 @@ def compute_data_quality():
     # Verifica finale delle dimensioni
     if X.ndim != 2:
         print(f"⚠️ Errore: X ha dimensione {X.ndim}, dovrebbe essere 2D")
+        print(f"Shape di X: {X.shape}")
         return 1.0
         
     if y.ndim != 1:
         print(f"⚠️ Errore: y ha dimensione {y.ndim}, dovrebbe essere 1D")
+        print(f"Shape di y: {y.shape}")
+        return 1.0
+    
+    # Verifica finale delle dimensioni attese
+    if X.shape[1] != 784:
+        print(f"⚠️ Errore: numero di features inatteso: {X.shape[1]}, dovrebbe essere 784")
         return 1.0
     
     # Calcola le metriche di qualità
@@ -162,6 +191,7 @@ def compute_data_quality():
         return float(score)
     except Exception as e:
         print(f"⚠️ Errore nel calcolo delle metriche di qualità: {str(e)}")
+        print(f"Shape di X: {X.shape}, Shape di y: {y.shape}")
         return 1.0  # In caso di errore, restituiamo un valore di default
 
 _current_client_model = None
