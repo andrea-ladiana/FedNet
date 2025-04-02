@@ -179,7 +179,7 @@ def compute_data_quality():
             batch_y = batch_y.reshape(-1)
             
         # Verifichiamo che i valori siano nel range corretto
-        # Controlliamo prima se i valori sono normalizzati (range [0,1] o [-1,1])
+        # Controlliamo prima se i valori sono normalizzati con mean/std
         max_val = np.max(batch_X)
         min_val = np.min(batch_X)
         
@@ -188,9 +188,13 @@ def compute_data_quality():
             if max_val <= 255 and min_val >= 0:
                 batch_X = batch_X / 255.0
             else:
-                print(f"⚠️ Attenzione: valori di X fuori range atteso. Min: {min_val:.2f}, Max: {max_val:.2f}")
-                # Normalizziamo i valori in [0,1] per sicurezza
-                batch_X = (batch_X - min_val) / (max_val - min_val)
+                # Se i valori sono normalizzati con mean/std, li riconvertiamo in [0,1]
+                # Assumiamo mean=0.1307 e std=0.3081 (valori standard per MNIST)
+                mean = 0.1307
+                std = 0.3081
+                batch_X = (batch_X * std + mean)
+                # Clipping per assicurarci che i valori siano in [0,1]
+                batch_X = np.clip(batch_X, 0, 1)
         elif max_val > 1.0:
             # Se i valori sono nel range [0,2], normalizziamoli a [0,1]
             batch_X = batch_X / 2.0

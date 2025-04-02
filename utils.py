@@ -1,5 +1,6 @@
 import os
 import gdown
+import torch
 
 def check_and_download_weights():
     """
@@ -46,4 +47,48 @@ def check_and_download_weights():
         print("✅ Pesi ValueNet già presenti")
     
     print("-" * 50)
-    return agg_weights_present, value_weights_present 
+    return agg_weights_present, value_weights_present
+
+def load_pretrained_weights(aggregator_net, value_net):
+    """
+    Carica i pesi pre-addestrati nei modelli AggregatorNet e ValueNet.
+    
+    Args:
+        aggregator_net: Modello AggregatorNet
+        value_net: Modello ValueNet
+        
+    Returns:
+        tuple: (bool, bool) - (agg_loaded, value_loaded) - Indica se i pesi sono stati caricati con successo
+    """
+    aggregator_path = "models/aggregator_net_weights.pth"
+    value_path = "models/value_net_weights.pth"
+    
+    print("\n🔄 Caricamento pesi pre-addestrati:")
+    print("-" * 50)
+    
+    # Carica i pesi per AggregatorNet
+    agg_loaded = False
+    if os.path.exists(aggregator_path):
+        try:
+            aggregator_net.load_state_dict(torch.load(aggregator_path))
+            print("✅ Pesi AggregatorNet caricati con successo")
+            agg_loaded = True
+        except Exception as e:
+            print(f"❌ Errore nel caricamento dei pesi AggregatorNet: {str(e)}")
+    else:
+        print("⚠️ File dei pesi AggregatorNet non trovato")
+    
+    # Carica i pesi per ValueNet
+    value_loaded = False
+    if os.path.exists(value_path):
+        try:
+            value_net.load_state_dict(torch.load(value_path))
+            print("✅ Pesi ValueNet caricati con successo")
+            value_loaded = True
+        except Exception as e:
+            print(f"❌ Errore nel caricamento dei pesi ValueNet: {str(e)}")
+    else:
+        print("⚠️ File dei pesi ValueNet non trovato")
+    
+    print("-" * 50)
+    return agg_loaded, value_loaded 
