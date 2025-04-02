@@ -7,6 +7,39 @@ import json
 import os
 from metrics.data_quality.data_quality import DataQualityEvaluator
 
+# Variabili globali per tenere traccia dei pesi
+_current_round_weights = {}
+
+def print_aggregation_weights():
+    """
+    Stampa i pesi utilizzati per l'aggregazione nel round corrente.
+    """
+    if not _current_round_weights:
+        print("\n⚠️ Nessun peso di aggregazione disponibile per questo round.")
+        return
+        
+    print("\n📊 Pesi di aggregazione utilizzati nel round corrente:")
+    print("-" * 50)
+    for client_id, weight in _current_round_weights.items():
+        print(f"Client {client_id}: {weight:.4f}")
+    print("-" * 50)
+
+def update_aggregation_weights(client_id, weight):
+    """
+    Aggiorna i pesi di aggregazione per il client corrente.
+    
+    Args:
+        client_id: ID del client
+        weight: Peso assegnato al client
+    """
+    _current_round_weights[client_id] = weight
+
+def reset_aggregation_weights():
+    """
+    Resetta i pesi di aggregazione per il nuovo round.
+    """
+    _current_round_weights.clear()
+
 def flatten_model(model):
     """
     Appiattisce i parametri di un modello in un unico vettore.
@@ -146,9 +179,24 @@ def compute_data_quality():
             batch_y = batch_y.reshape(-1)
             
         # Verifichiamo che i valori siano nel range corretto
-        if np.any(batch_X < 0) or np.any(batch_X > 255):
-            print("⚠️ Attenzione: valori di X fuori range [0,255]")
-            batch_X = np.clip(batch_X, 0, 255)
+        # Controlliamo prima se i valori sono normalizzati (range [0,1] o [-1,1])
+        max_val = np.max(batch_X)
+        min_val = np.min(batch_X)
+        
+        if max_val > 1.0 or min_val < -1.0:
+            # Se i valori sono nel range [0,255], normalizziamoli a [0,1]
+            if max_val <= 255 and min_val >= 0:
+                batch_X = batch_X / 255.0
+            else:
+                print(f"⚠️ Attenzione: valori di X fuori range atteso. Min: {min_val:.2f}, Max: {max_val:.2f}")
+                # Normalizziamo i valori in [0,1] per sicurezza
+                batch_X = (batch_X - min_val) / (max_val - min_val)
+        elif max_val > 1.0:
+            # Se i valori sono nel range [0,2], normalizziamoli a [0,1]
+            batch_X = batch_X / 2.0
+        elif min_val < 0:
+            # Se i valori sono nel range [-1,1], normalizziamoli a [0,1]
+            batch_X = (batch_X + 1) / 2.0
             
         if np.any(batch_y < 0) or np.any(batch_y > 9):
             print("⚠️ Attenzione: valori di y fuori range [0,9]")
@@ -242,7 +290,34 @@ def compute_model_contribution():
     """
     Calcola il contributo del modello all'aggregazione.
     """
-    return random.random()  # Dummy: restituisce un valore casuale tra 0 e 1
+    # Calcoliamo il contributo basato su multiple metriche
+    weights = {
+        'similarity': 0.3,
+        'performance': 0.3,
+        'data_quality': 0.2,
+        'hardware_quality': 0.1,
+        'trustworthiness': 0.1
+    }
+    
+    try:
+        similarity = compute_current_model_similarity()
+        performance = compute_model_performance()
+        data_quality = compute_data_quality()
+        hardware_quality = compute_hardware_quality()
+        trustworthiness = compute_client_trustworthiness()
+        
+        contribution = (
+            weights['similarity'] * similarity +
+            weights['performance'] * performance +
+            weights['data_quality'] * data_quality +
+            weights['hardware_quality'] * hardware_quality +
+            weights['trustworthiness'] * trustworthiness
+        )
+        
+        return float(contribution)
+    except Exception as e:
+        print(f"⚠️ Errore nel calcolo del contributo: {str(e)}")
+        return 0.0  # In caso di errore, restituiamo un contributo nullo
 
 def compute_model_performance():
     """
