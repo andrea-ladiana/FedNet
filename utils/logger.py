@@ -3,30 +3,61 @@ import torch
 from config.settings import LOG_DIR
 
 class FederatedLogger:
-    def __init__(self, sub_dir=None, project_name="fednet", run_name=None):
+    _main_run_initialized = False # Flag di classe per tracciare l'inizializzazione principale
+
+    def __init__(self, sub_dir=None, project_name="fednet", run_name=None, is_main_logger=False):
         """
-        Inizializza il logger usando wandb invece di TensorBoard.
+        Inizializza il logger usando wandb. Inizializza la run solo se non è già attiva
+        o se specificato come logger principale.
         
         Args:
             sub_dir: Sottodirectory opzionale per diversi esperimenti
             project_name: Nome del progetto in wandb
             run_name: Nome opzionale dell'esecuzione
+            is_main_logger: Flag per indicare se questo è il logger principale
         """
-        # Chiudiamo eventuali sessioni wandb esistenti
-        if wandb.run is not None:
-            wandb.finish()
-            
-        # Inizializza wandb
-        self.run = wandb.init(
-            project=project_name,
-            name=run_name or sub_dir,
-            config={
-                "log_dir": LOG_DIR,
-                "sub_dir": sub_dir
-            },
-            reinit=True,
-            mode="online"  # Forziamo la modalità online
-        )
+        self.is_main_logger = is_main_logger
+
+        # Inizializza wandb solo se non esiste una run attiva o se è il logger principale
+        # e l'inizializzazione principale non è ancora avvenuta.
+        if wandb.run is None or (self.is_main_logger and not FederatedLogger._main_run_initialized):
+            # Chiudi una run precedente solo se stiamo forzando l'inizio di una nuova run principale
+            if wandb.run is not None and self.is_main_logger:
+                 print("Chiusura run wandb precedente...")
+                 wandb.finish()
+
+            print(f"Inizializzazione WANDB run (main={self.is_main_logger})...")
+            try:
+                self.run = wandb.init(
+                    project=project_name,
+                    name=run_name or sub_dir or "main_run", # Nome di fallback
+                    config={
+                        "log_dir": LOG_DIR,
+                        "sub_dir": sub_dir
+                    },
+                    reinit=False, # Non serve reinit=True se gestiamo l'inizializzazione qui
+                    mode="online", # Forziamo la modalità online
+                    resume="allow" # Permette di riprendere se esiste una run con lo stesso ID
+                )
+                if self.is_main_logger:
+                     FederatedLogger._main_run_initialized = True
+                print(f"WANDB Run ID: {self.run.id if self.run else 'Non inizializzato'}")
+            except Exception as e:
+                 print(f"Errore durante wandb.init: {e}")
+                 self.run = None # Assicurati che self.run sia None se l'init fallisce
+        else:
+            # Se una run è già attiva, usa quella esistente
+            print(f"Utilizzo WANDB run esistente (main={self.is_main_logger})...")
+            self.run = wandb.run
+            # Aggiorna la configurazione se necessario (es. per sub_dir)
+            if sub_dir and self.run:
+                 try:
+                     self.run.config.update({"sub_dir": sub_dir}, allow_val_change=True)
+                 except AttributeError:
+                     print("Attenzione: impossibile aggiornare la config della run wandb esistente.")
+
+
+        # Ogni istanza di logger può avere il suo step, o potremmo usare wandb.step
         self.step = 0
         
     def log_metrics(self, metrics_dict, step=None):
@@ -101,7 +132,12 @@ class FederatedLogger:
             
     def close(self):
         """
-        Chiude la sessione wandb.
+        Chiude la sessione wandb solo se questo è il logger principale
+        e una run è attiva.
         """
-        if wandb.run is not None:
-            wandb.finish() 
+        if self.is_main_logger and wandb.run is not None:
+            print("Chiusura WANDB run...")
+            wandb.finish()
+        # Resetta il flag di classe quando la run principale viene chiusa
+        if self.is_main_logger:
+            FederatedLogger._main_run_initialized = False 

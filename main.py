@@ -444,8 +444,8 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
         FedNetError: Se ci sono problemi durante l'esecuzione
     """
     # Inizializziamo il logger principale
-    logger = FederatedLogger()
-    
+    logger = FederatedLogger(is_main_logger=True) # Imposta come logger principale
+
     # Definiamo i percorsi per i file di log testuali
     log_dir_path = wandb.run.dir if wandb.run else './wandb/latest-run/files' # Fallback se wandb non è inizializzato
     if not os.path.exists(log_dir_path):
@@ -491,8 +491,9 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
             print(f"\n=== ESPERIMENTO {exp_idx+1}/{num_experiments} ===")
             
             # Creiamo un logger per l'esperimento corrente
+            # Non chiude e riapre la sessione wandb
             exp_logger = FederatedLogger(sub_dir=f"experiment_{exp_idx+1}")
-            
+
             try:
                 # 3.1) Carichiamo i dataloader (diversi per ogni esperimento)
                 print("Caricamento del dataset MNIST...")
@@ -753,10 +754,10 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                         f.write(f"Exp {exp_idx+1}: {final_acc:.4f}\n")
                 except Exception as e:
                     print(f"Errore nella valutazione finale dell'esperimento {exp_idx+1}: {str(e)}")
-                
-                # Chiudiamo il logger dell'esperimento
-                exp_logger.close()
-                
+
+                # Non chiudiamo il logger dell'esperimento qui per non terminare la run wandb
+                # exp_logger.close()
+
             except Exception as e:
                 print(f"Errore nell'esperimento {exp_idx+1}: {str(e)}")
                 continue
@@ -810,8 +811,9 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
         traceback.print_exc()
         sys.exit(1)
     finally:
-        # Chiudiamo il logger principale
-        logger.close()
+        # Chiudiamo il logger principale SOLO alla fine
+        if 'logger' in locals():
+            logger.close()
 
 def train_federated(model, train_dataloaders, test_dataloader, 
                    num_rounds=10, local_epochs=5, learning_rate=0.01,
