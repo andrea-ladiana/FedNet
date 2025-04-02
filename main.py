@@ -427,7 +427,7 @@ def update_networks_from_experience(aggregator_net, value_net, optimizer, experi
         traceback.print_exc()
         return {'policy_loss': float('nan'), 'value_loss': float('nan'), 'total_loss': float('nan')}
 
-def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval=2):
+def train_aggregator_with_multiple_experiments(num_experiments=40, save_interval=5):
     """
     Allena l'AggregatorNet su più esperimenti indipendenti, seguendo
     un approccio simile ad AlphaZero/AlphaGo dove un modello impara
