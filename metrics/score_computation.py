@@ -11,17 +11,18 @@ from metrics.partial_scores import (
     set_test_loader
 )
 
-def compute_scores(client_models, global_model, test_loaders):
+def compute_scores(client_models, global_model, test_loaders, broken_client_indices=None):
     """
     Calcola gli score per tutti i client mantenendo separate le diverse metriche.
     
     Args:
-        client_models: Lista dei modelli dei client
+        client_models: Lista dei modelli dei client ATTIVI
         global_model: Modello globale corrente
-        test_loaders: Lista dei DataLoader di test per ogni client
+        test_loaders: Lista dei DataLoader di test per ogni client ATTIVO
+        broken_client_indices: Lista opzionale di indici di client considerati "rotti"
         
     Returns:
-        torch.Tensor: Tensore di dimensione (num_clients, 6) dove ogni riga contiene:
+        torch.Tensor: Tensore di dimensione (NUM_CLIENTS, 6) dove ogni riga contiene:
         [trustworthiness, hardware, data, similarity, contribution, performance]
         Ogni componente è normalizzata separatamente.
         
@@ -64,6 +65,17 @@ def compute_scores(client_models, global_model, test_loaders):
             scores[i, 4] = 0.5  # Contribution default
             scores[i, 5] = 0.5  # Performance default
     
+    # Azzera gli score per i client rotti (PRIMA della normalizzazione)
+    if broken_client_indices:
+        print(f"DEBUG: Azzeramento score per client rotti: {broken_client_indices}")
+        broken_indices_tensor = torch.tensor(broken_client_indices, dtype=torch.long)
+        # Assicurati che gli indici siano validi
+        valid_broken_indices = broken_indices_tensor[broken_indices_tensor < NUM_CLIENTS]
+        if len(valid_broken_indices) > 0:
+            scores[valid_broken_indices, :] = 0.0
+        else:
+            print("WARNING: Nessun indice valido trovato tra i client rotti.")
+
     # Normalizziamo ogni componente separatamente
     for j in range(6):
         min_val = scores[:, j].min()

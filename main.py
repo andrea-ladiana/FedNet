@@ -4,6 +4,7 @@ import sys
 import traceback
 import numpy as np
 import torch.nn.functional as F
+import os
 
 from config.settings import (
     DEVICE, NUM_CLIENTS, LOCAL_EPOCHS, GLOBAL_ROUNDS,
@@ -444,6 +445,20 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
     # Inizializziamo il logger principale
     logger = FederatedLogger()
     
+    # Definiamo i percorsi per i file di log testuali
+    log_file_paths = {
+        'round_rewards': os.path.join(logger.log_dir, 'round_rewards.txt'),
+        'round_supervised_loss': os.path.join(logger.log_dir, 'round_supervised_loss.txt'),
+        'experiment_final_accuracy': os.path.join(logger.log_dir, 'experiment_final_accuracy.txt'),
+        'batch_rl_total_loss': os.path.join(logger.log_dir, 'batch_rl_total_loss.txt'),
+        'batch_rl_policy_loss': os.path.join(logger.log_dir, 'batch_rl_policy_loss.txt'),
+        'batch_rl_value_loss': os.path.join(logger.log_dir, 'batch_rl_value_loss.txt')
+    }
+    # Inizializziamo i file (li creiamo vuoti o sovrascriviamo se esistono)
+    for path in log_file_paths.values():
+        with open(path, 'w') as f:
+            pass # Crea o svuota il file
+
     try:
         print(f"Inizializzazione del training federato multi-esperimento ({num_experiments} esperimenti)...")
         
@@ -492,6 +507,22 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                     print(f"Client con dimensione dati anomala (Exp {exp_idx+1}): {anomalous_size_clients}")
                     exp_logger.log_config({'anomalous_size_clients': anomalous_size_clients}) # Logghiamo anche
                 
+                # Identifichiamo client "rumorosi" e "rotti" per l'INTERO esperimento
+                noisy_clients_experiment = []
+                if ATTACK_FRACTION > 0.0:
+                    num_noisy = max(1, int(ATTACK_FRACTION * NUM_CLIENTS))
+                    noisy_clients_experiment = np.random.choice(range(NUM_CLIENTS), size=num_noisy, replace=False).tolist()
+                    print(f"Client rumorosi (data poison) per Exp {exp_idx+1}: {noisy_clients_experiment}")
+                    exp_logger.log_config({'noisy_clients_experiment': noisy_clients_experiment})
+
+                broken_clients_experiment = [
+                    i for i in range(NUM_CLIENTS) 
+                    if np.random.rand() < CLIENT_FAILURE_PROB
+                ]
+                if broken_clients_experiment:
+                    print(f"Client rotti per Exp {exp_idx+1}: {broken_clients_experiment}")
+                    exp_logger.log_config({'broken_clients_experiment': broken_clients_experiment})
+                
                 # 3.2) Inizializziamo nuovi modelli client per questo esperimento
                 print("Inizializzazione dei modelli locali per questo esperimento...")
                 local_models = [LocalMNISTModel().to_device() for _ in range(NUM_CLIENTS)]
@@ -502,39 +533,34 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                 aggregator = FedAvgAggregator(global_model)
                 
                 # 3.4) Ground truth per exclude_flag (per training supervisionato)
-                exclude_true = torch.randint(0, 2, (NUM_CLIENTS,)).float().to(DEVICE)
+                # Modifica: Usiamo i client rotti come ground truth per l'esclusione
+                exclude_true = torch.zeros(NUM_CLIENTS, device=DEVICE)
+                if broken_clients_experiment:
+                    exclude_true[torch.tensor(broken_clients_experiment, dtype=torch.long)] = 1.0
+                print(f"Ground truth per esclusione (client rotti): {exclude_true.nonzero().squeeze().tolist() if broken_clients_experiment else 'Nessuno'}")
+                # exclude_true = torch.randint(0, 2, (NUM_CLIENTS,)).float().to(DEVICE) # Vecchia logica casuale
                 
                 # 3.5) Lista dei reward per questo esperimento specifico
                 experiment_rewards = []
-                
-                # Dizionario per tenere traccia dei fallimenti dei client in questo esperimento
-                client_failure_history = {}
                 
                 # 3.6) Eseguiamo i round federati per questo esperimento
                 for round_idx in range(GLOBAL_ROUNDS):
                     print(f"\n--- Round {round_idx+1}/{GLOBAL_ROUNDS} dell\'Esperimento {exp_idx+1} ---")
                     
-                    # Identifichiamo i client attaccati con rumore e quelli falliti per questo round
-                    noisy_clients_in_round = []
-                    if ATTACK_FRACTION > 0.0:
-                        num_noisy = max(1, int(ATTACK_FRACTION * NUM_CLIENTS))
-                        noisy_clients_in_round = np.random.choice(range(NUM_CLIENTS), size=num_noisy, replace=False).tolist()
-                    
-                    broken_clients_in_round = []
                     active_client_indices = []
                     trained_local_models = [] # Lista per i modelli effettivamente addestrati
 
                     # (A) Training locale di ciascun client
                     for i in range(NUM_CLIENTS):
-                        # Verifica fallimento
-                        if is_client_broken(i, round_idx, client_failure_history):
-                            broken_clients_in_round.append(i)
+                        # Verifica se il client è rotto (decisione presa all'inizio dell'esperimento)
+                        if i in broken_clients_experiment:
                             continue # Salta training per client rotto
 
                         # Client attivo
                         active_client_indices.append(i)
-                        current_model = local_models[i] # Usiamo il modello inizializzato per questo esperimento
-                        is_noisy = i in noisy_clients_in_round
+                        current_model = local_models[i] 
+                        # Verifica se il client è rumoroso (decisione presa all'inizio dell'esperimento)
+                        is_noisy = i in noisy_clients_experiment
 
                         try:
                             print(f"Training locale del client {i+1}/{NUM_CLIENTS} {'(rumoroso)' if is_noisy else ''}...")
@@ -547,16 +573,18 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                         except ModelError as e:
                             print(f"Errore nel training del client {i}: {str(e)}")
                             # Se il training fallisce, consideriamo il client rotto per questo round
-                            if i not in broken_clients_in_round: broken_clients_in_round.append(i)
+                            if i not in broken_clients_experiment: broken_clients_experiment.append(i)
                             if i in active_client_indices: active_client_indices.remove(i)
                             continue
                     
                     num_active_clients = len(active_client_indices)
                     print(f"Client attivi in questo round: {num_active_clients}/{NUM_CLIENTS}")
-                    if broken_clients_in_round:
-                         print(f"Client falliti/rotti in questo round: {broken_clients_in_round}")
-                    if noisy_clients_in_round:
-                         print(f"Client con dati rumorosi in questo round: {noisy_clients_in_round}")
+                    # Stampiamo i client rotti (stabiliti all'inizio exp)
+                    if broken_clients_experiment:
+                         print(f"Client rotti (stabiliti all'inizio exp): {broken_clients_experiment}")
+                    # Stampiamo i client rumorosi (stabiliti all'inizio exp)
+                    if noisy_clients_experiment:
+                         print(f"Client con dati rumorosi (stabiliti all'inizio exp): {noisy_clients_experiment}")
 
                     # Se nessun client è attivo, saltiamo il resto del round
                     if num_active_clients == 0:
@@ -568,12 +596,17 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                     for idx, trained_model in zip(active_client_indices, trained_local_models):
                         local_models[idx] = trained_model
 
-                    # (B) Calcoliamo gli score dei client ATTIVI
+                    # (B) Calcoliamo gli score dei client ATTIVI, passando info sui rotti
                     try:
                         # Passiamo solo i modelli dei client attivi e il modello globale
-                        # Nota: compute_scores deve poter gestire un numero di modelli < NUM_CLIENTS
-                        scores = compute_scores(trained_local_models, global_model, [test_loaders[i] for i in active_client_indices])
-                        print(f"DEBUG - Dimensione degli score calcolati (attivi): {scores.shape}")
+                        # Aggiungiamo broken_clients_experiment per permettere a compute_scores di azzerarli
+                        scores = compute_scores(
+                            client_models=trained_local_models, 
+                            global_model=global_model, 
+                            test_loaders=[test_loaders[i] for i in active_client_indices],
+                            broken_client_indices=broken_clients_experiment
+                        )
+                        print(f"DEBUG - Dimensione degli score calcolati (attivi+rotti azzerati): {scores.shape}")
                     except Exception as e:
                         raise ClientError(f"Errore nel calcolo degli score: {str(e)}")
                     
@@ -660,9 +693,37 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                         print(f"Reward (accuracy) = {reward:.4f}")
                         exp_logger.log_metrics({'reward': reward})
                         experiment_rewards.append(reward)
+                        # Scriviamo su file txt
+                        with open(log_file_paths['round_rewards'], 'a') as f:
+                            f.write(f"Exp {exp_idx+1}, Round {round_idx+1}: {reward:.4f}\n")
                     except Exception as e:
                         raise ModelError(f"Errore nella valutazione del modello: {str(e)}")
                     
+                    # (F) Eseguiamo un aggiornamento supervisionato per exclude_flag
+                    try:
+                        # Assicuriamoci che client_scores sia definito anche se il calcolo degli score fallisce
+                        if 'client_scores' not in locals(): 
+                             # Calcoliamo gli score se non sono stati calcolati prima (caso raro)
+                             with torch.no_grad():
+                                 _, _, client_scores = master_aggregator_net(scores)
+
+                        # Passiamo la ground truth corretta (basata sui client rotti)
+                        sup_loss = supervised_update_step(
+                            master_aggregator_net, master_optimizer, 
+                            scores, exclude_true, client_scores  # Passiamo gli score calcolati e exclude_true corretto
+                        )
+                        print(f"  [SUP] Loss = {sup_loss:.4f}")
+                        exp_logger.log_metrics({'supervised_loss': sup_loss})
+                        # Scriviamo su file txt
+                        with open(log_file_paths['round_supervised_loss'], 'a') as f:
+                            f.write(f"Exp {exp_idx+1}, Round {round_idx+1}: {sup_loss:.4f}\n")
+                    except Exception as e:
+                        raise RLError(f"Errore nell'aggiornamento supervisionato: {str(e)}")
+
+                    # Aggiorniamo la storia dei reward per la baseline RL
+                    experiment_rewards.append(reward)
+                    # ... (potremmo non aver bisogno di reward_history se l'aggiornamento RL avviene nel buffer)
+
                     # (F) Salvataggio dell'esperienza nel buffer condiviso
                     experience_buffer['states'].append(scores.detach().clone()) # Salviamo gli score calcolati sui client attivi
                     experience_buffer['weights'].append(w.detach().clone()) # Salviamo i pesi finali usati
@@ -670,9 +731,10 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
 
                     # Stampa riepilogo del round
                     print("\nRiepilogo Round:")
-                    print(f"  - Client con dimensione dati anomala (stabiliti all'inizio exp.): {anomalous_size_clients if anomalous_size_clients else 'Nessuno'}")
-                    print(f"  - Client con dati rumorosi aggiunti: {noisy_clients_in_round if noisy_clients_in_round else 'Nessuno'}")
-                    print(f"  - Client falliti o con errori training: {broken_clients_in_round if broken_clients_in_round else 'Nessuno'}")
+                    print(f"  - Client con dimensione dati anomala (inizio exp): {anomalous_size_clients if anomalous_size_clients else 'Nessuno'}")
+                    print(f"  - Client con dati rumorosi (inizio exp): {noisy_clients_experiment if noisy_clients_experiment else 'Nessuno'}")
+                    print(f"  - Client rotti (inizio exp): {broken_clients_experiment if broken_clients_experiment else 'Nessuno'}")
+                    print(f"  - Client attivi partecipanti a questo round: {active_client_indices}") # Aggiunto per chiarezza
                     print("-" * 20) # Separatore
 
                 # 3.7) Valutazione finale del modello aggregato per questo esperimento
@@ -681,6 +743,9 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                     print(f"\nAccuratezza finale dell'Esperimento {exp_idx+1} = {final_acc:.4f}")
                     exp_logger.log_metrics({'final_accuracy': final_acc})
                     logger.log_metrics({f'exp_{exp_idx+1}_final_accuracy': final_acc})
+                    # Scriviamo su file txt
+                    with open(log_file_paths['experiment_final_accuracy'], 'a') as f:
+                        f.write(f"Exp {exp_idx+1}: {final_acc:.4f}\n")
                 except Exception as e:
                     print(f"Errore nella valutazione finale dell'esperimento {exp_idx+1}: {str(e)}")
                 
@@ -694,14 +759,22 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
             # 3.8) Aggiornamento delle reti master con l'esperienza raccolta
             if (exp_idx + 1) % save_interval == 0 or exp_idx == num_experiments - 1:
                 print("\nAggiornamento reti master con l'esperienza raccolta...")
-                update_networks_from_experience(
+                batch_metrics = update_networks_from_experience(
                     master_aggregator_net,
                     master_value_net,
                     master_optimizer,
                     experience_buffer,
                     logger
                 )
-                
+                # Scriviamo le metriche batch RL su file txt
+                if batch_metrics and not any(np.isnan(v) for v in batch_metrics.values()):
+                     with open(log_file_paths['batch_rl_total_loss'], 'a') as f:
+                         f.write(f"After Exp {exp_idx+1}: {batch_metrics['total_loss']:.4f}\n")
+                     with open(log_file_paths['batch_rl_policy_loss'], 'a') as f:
+                         f.write(f"After Exp {exp_idx+1}: {batch_metrics['policy_loss']:.4f}\n")
+                     with open(log_file_paths['batch_rl_value_loss'], 'a') as f:
+                         f.write(f"After Exp {exp_idx+1}: {batch_metrics['value_loss']:.4f}\n")
+
                 # Salviamo le reti master ogni save_interval esperimenti
                 torch.save(master_aggregator_net.state_dict(), 
                           f'models/master_aggregator_net_exp{exp_idx+1}.pt')
