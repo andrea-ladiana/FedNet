@@ -238,9 +238,10 @@ def check_and_download_weights():
     Returns:
         tuple: (bool, bool) - (agg_weights_present, value_weights_present)
     """
-    # URL dei file su Google Drive
-    aggregator_url = "https://drive.google.com/file/d/1rSSDSbsNNEk7Rr9S3dbu8wIqdMMaSQAh/view?usp=drive_link"
-    value_url = "https://drive.google.com/file/d/1A0Ud47CMIaJzcXFHXYTfOITDb_t2oIxX/view?usp=drive_link"
+    # URL diretti dei file su Google Drive (usando il formato id)
+    # Usiamo gli ID dei file invece degli URL completi
+    aggregator_id = "1rSSDSbsNNEk7Rr9S3dbu8wIqdMMaSQAh"
+    value_id = "1A0Ud47CMIaJzcXFHXYTfOITDb_t2oIxX"
     
     # Percorsi locali per i file
     aggregator_path = "models/aggregator_net_weights.pth"
@@ -253,12 +254,13 @@ def check_and_download_weights():
     print("-" * 50)
     
     # Download e verifica AggregatorNet
-    agg_weights_present = os.path.exists(aggregator_path)
+    agg_weights_present = os.path.exists(aggregator_path) and os.path.getsize(aggregator_path) > 1000  # Verifica anche che il file non sia vuoto o troppo piccolo
     if not agg_weights_present:
         print("📥 Download pesi AggregatorNet in corso...")
         try:
-            gdown.download(aggregator_url, aggregator_path, quiet=False)
-            agg_weights_present = os.path.exists(aggregator_path)
+            # Usa il formato diretto per il download di gdown con ID
+            gdown.download(id=aggregator_id, output=aggregator_path, quiet=False)
+            agg_weights_present = os.path.exists(aggregator_path) and os.path.getsize(aggregator_path) > 1000
             if agg_weights_present:
                 print("✅ Download AggregatorNet completato")
             else:
@@ -270,12 +272,13 @@ def check_and_download_weights():
         print("✅ Pesi AggregatorNet già presenti")
     
     # Download e verifica ValueNet
-    value_weights_present = os.path.exists(value_path)
+    value_weights_present = os.path.exists(value_path) and os.path.getsize(value_path) > 1000
     if not value_weights_present:
         print("📥 Download pesi ValueNet in corso...")
         try:
-            gdown.download(value_url, value_path, quiet=False)
-            value_weights_present = os.path.exists(value_path)
+            # Usa il formato diretto per il download di gdown con ID
+            gdown.download(id=value_id, output=value_path, quiet=False)
+            value_weights_present = os.path.exists(value_path) and os.path.getsize(value_path) > 1000
             if value_weights_present:
                 print("✅ Download ValueNet completato")
             else:
@@ -308,29 +311,65 @@ def load_pretrained_weights(aggregator_net, value_net):
     
     # Carica i pesi per AggregatorNet
     agg_loaded = False
-    if os.path.exists(aggregator_path):
+    if os.path.exists(aggregator_path) and os.path.getsize(aggregator_path) > 1000:
         try:
-            state_dict = torch.load(aggregator_path)
-            aggregator_net.load_state_dict(state_dict)
-            print("✅ Pesi AggregatorNet caricati con successo")
-            agg_loaded = True
+            # Verifica il contenuto del file prima del caricamento
+            with open(aggregator_path, 'rb') as f:
+                header = f.read(10)  # Leggi i primi 10 byte per verificare
+                
+            # Se il file inizia con '<', potrebbe essere un file HTML e non un file di PyTorch
+            if header.startswith(b'<'):
+                print("❌ Il file dei pesi AggregatorNet sembra essere un file HTML, non un file di PyTorch")
+                # Elimina il file corrotto
+                os.remove(aggregator_path)
+                agg_loaded = False
+            else:
+                # Ripristina il puntatore del file e procedi con il caricamento
+                try:
+                    state_dict = torch.load(aggregator_path, map_location='cpu')
+                    aggregator_net.load_state_dict(state_dict)
+                    print("✅ Pesi AggregatorNet caricati con successo")
+                    agg_loaded = True
+                except RuntimeError as e:
+                    if "different shape" in str(e):
+                        print(f"⚠️ Errore di compatibilità nei pesi AggregatorNet: {str(e)}")
+                    else:
+                        print(f"❌ Errore nel caricamento dei pesi AggregatorNet: {str(e)}")
         except Exception as e:
             print(f"❌ Errore nel caricamento dei pesi AggregatorNet: {str(e)}")
     else:
-        print("⚠️ File dei pesi AggregatorNet non trovato")
+        print("⚠️ File dei pesi AggregatorNet non trovato o invalido")
     
     # Carica i pesi per ValueNet
     value_loaded = False
-    if os.path.exists(value_path):
+    if os.path.exists(value_path) and os.path.getsize(value_path) > 1000:
         try:
-            state_dict = torch.load(value_path)
-            value_net.load_state_dict(state_dict)
-            print("✅ Pesi ValueNet caricati con successo")
-            value_loaded = True
+            # Verifica il contenuto del file prima del caricamento
+            with open(value_path, 'rb') as f:
+                header = f.read(10)  # Leggi i primi 10 byte per verificare
+                
+            # Se il file inizia con '<', potrebbe essere un file HTML e non un file di PyTorch
+            if header.startswith(b'<'):
+                print("❌ Il file dei pesi ValueNet sembra essere un file HTML, non un file di PyTorch")
+                # Elimina il file corrotto
+                os.remove(value_path)
+                value_loaded = False
+            else:
+                # Ripristina il puntatore del file e procedi con il caricamento
+                try:
+                    state_dict = torch.load(value_path, map_location='cpu')
+                    value_net.load_state_dict(state_dict)
+                    print("✅ Pesi ValueNet caricati con successo")
+                    value_loaded = True
+                except RuntimeError as e:
+                    if "different shape" in str(e):
+                        print(f"⚠️ Errore di compatibilità nei pesi ValueNet: {str(e)}")
+                    else:
+                        print(f"❌ Errore nel caricamento dei pesi ValueNet: {str(e)}")
         except Exception as e:
             print(f"❌ Errore nel caricamento dei pesi ValueNet: {str(e)}")
     else:
-        print("⚠️ File dei pesi ValueNet non trovato")
+        print("⚠️ File dei pesi ValueNet non trovato o invalido")
     
     print("-" * 50)
-    return agg_loaded, value_loaded 
+    return agg_loaded, value_loaded
