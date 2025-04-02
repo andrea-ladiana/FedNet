@@ -28,7 +28,7 @@ from utils.validation import (
     validate_model, validate_dataloader, validate_positive_int,
     validate_learning_rate, validate_weights
 )
-from utils import check_and_download_weights, load_pretrained_weights
+from utils.weights import check_and_download_weights, load_pretrained_weights
 
 def is_client_broken(client_id, round_num, client_failure_history):
     """
