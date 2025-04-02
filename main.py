@@ -16,7 +16,7 @@ from models.local import LocalMNISTModel
 from models.aggregator import AggregatorNet, ValueNet, FedAvgAggregator
 from training.local import train_local_model
 from training.evaluation import evaluate_model
-from utils.data import split_dataset_mnist, get_validation_loader
+from utils.data import split_dataset_mnist, get_validation_loader, check_and_download_weights, load_pretrained_weights
 from rl.rl import rl_update_step, supervised_update_step
 from utils.logger import FederatedLogger
 from metrics.score_computation import compute_scores
@@ -28,7 +28,6 @@ from utils.validation import (
     validate_model, validate_dataloader, validate_positive_int,
     validate_learning_rate, validate_weights
 )
-from utils.weights import check_and_download_weights, load_pretrained_weights
 
 def is_client_broken(client_id, round_num, client_failure_history):
     """
