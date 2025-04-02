@@ -510,15 +510,15 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                 ]
                 if anomalous_size_clients:
                     print(f"Client con dimensione dati anomala (Exp {exp_idx+1}): {anomalous_size_clients}")
-                    exp_logger.log_config({'anomalous_size_clients': anomalous_size_clients}) # Logghiamo anche
-                
+                    if wandb.run: wandb.config.update({'anomalous_size_clients': anomalous_size_clients}, allow_val_change=True)
+
                 # Identifichiamo client "rumorosi" e "rotti" per l'INTERO esperimento
                 noisy_clients_experiment = []
                 if ATTACK_FRACTION > 0.0:
                     num_noisy = max(1, int(ATTACK_FRACTION * NUM_CLIENTS))
                     noisy_clients_experiment = np.random.choice(range(NUM_CLIENTS), size=num_noisy, replace=False).tolist()
                     print(f"Client rumorosi (data poison) per Exp {exp_idx+1}: {noisy_clients_experiment}")
-                    exp_logger.log_config({'noisy_clients_experiment': noisy_clients_experiment})
+                    if wandb.run: wandb.config.update({'noisy_clients_experiment': noisy_clients_experiment}, allow_val_change=True)
 
                 broken_clients_experiment = [
                     i for i in range(NUM_CLIENTS) 
@@ -526,7 +526,7 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
                 ]
                 if broken_clients_experiment:
                     print(f"Client rotti per Exp {exp_idx+1}: {broken_clients_experiment}")
-                    exp_logger.log_config({'broken_clients_experiment': broken_clients_experiment})
+                    if wandb.run: wandb.config.update({'broken_clients_experiment': broken_clients_experiment}, allow_val_change=True)
                 
                 # 3.2) Inizializziamo nuovi modelli client per questo esperimento
                 print("Inizializzazione dei modelli locali per questo esperimento...")
