@@ -5,6 +5,7 @@ import traceback
 import numpy as np
 import torch.nn.functional as F
 import os
+import wandb
 
 from config.settings import (
     DEVICE, NUM_CLIENTS, LOCAL_EPOCHS, GLOBAL_ROUNDS,
@@ -446,13 +447,17 @@ def train_aggregator_with_multiple_experiments(num_experiments=10, save_interval
     logger = FederatedLogger()
     
     # Definiamo i percorsi per i file di log testuali
+    log_dir_path = wandb.run.dir if wandb.run else './wandb/latest-run/files' # Fallback se wandb non è inizializzato
+    if not os.path.exists(log_dir_path):
+        os.makedirs(log_dir_path, exist_ok=True)
+        
     log_file_paths = {
-        'round_rewards': os.path.join(logger.log_dir, 'round_rewards.txt'),
-        'round_supervised_loss': os.path.join(logger.log_dir, 'round_supervised_loss.txt'),
-        'experiment_final_accuracy': os.path.join(logger.log_dir, 'experiment_final_accuracy.txt'),
-        'batch_rl_total_loss': os.path.join(logger.log_dir, 'batch_rl_total_loss.txt'),
-        'batch_rl_policy_loss': os.path.join(logger.log_dir, 'batch_rl_policy_loss.txt'),
-        'batch_rl_value_loss': os.path.join(logger.log_dir, 'batch_rl_value_loss.txt')
+        'round_rewards': os.path.join(log_dir_path, 'round_rewards.txt'),
+        'round_supervised_loss': os.path.join(log_dir_path, 'round_supervised_loss.txt'),
+        'experiment_final_accuracy': os.path.join(log_dir_path, 'experiment_final_accuracy.txt'),
+        'batch_rl_total_loss': os.path.join(log_dir_path, 'batch_rl_total_loss.txt'),
+        'batch_rl_policy_loss': os.path.join(log_dir_path, 'batch_rl_policy_loss.txt'),
+        'batch_rl_value_loss': os.path.join(log_dir_path, 'batch_rl_value_loss.txt')
     }
     # Inizializziamo i file (li creiamo vuoti o sovrascriviamo se esistono)
     for path in log_file_paths.values():
