@@ -28,6 +28,7 @@ from utils.validation import (
     validate_model, validate_dataloader, validate_positive_int,
     validate_learning_rate, validate_weights
 )
+from utils import check_and_download_weights, load_pretrained_weights
 
 def is_client_broken(client_id, round_num, client_failure_history):
     """
@@ -476,6 +477,22 @@ def train_aggregator_with_multiple_experiments(num_experiments=40, save_interval
                 {'params': master_aggregator_net.parameters(), 'lr': LR_AGGREGATOR},
                 {'params': master_value_net.parameters(), 'lr': LR_AGGREGATOR}
             ])
+            
+            # Verifichiamo e scarichiamo i pesi pre-addestrati se necessario
+            print("\nVerifica dei pesi pre-addestrati...")
+            agg_weights_present, value_weights_present = check_and_download_weights()
+            
+            # Carichiamo i pesi pre-addestrati se disponibili
+            if agg_weights_present and value_weights_present:
+                print("\nCaricamento dei pesi pre-addestrati...")
+                agg_loaded, value_loaded = load_pretrained_weights(master_aggregator_net, master_value_net)
+                if agg_loaded and value_loaded:
+                    print("✅ Pesi pre-addestrati caricati con successo")
+                else:
+                    print("⚠️ Alcuni pesi non sono stati caricati correttamente")
+            else:
+                print("⚠️ Pesi pre-addestrati non disponibili, inizializzazione da zero")
+                
         except Exception as e:
             raise ModelError(f"Errore nell'inizializzazione delle reti master: {str(e)}")
         
