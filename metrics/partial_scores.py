@@ -117,26 +117,52 @@ def compute_data_quality():
         return 1.0
     
     # Estrai features e labels dal test loader
-    X = []
-    y = []
+    X_list = []
+    y_list = []
     for batch_X, batch_y in _current_test_loader:
-        X.append(batch_X.numpy())
-        y.append(batch_y.numpy())
+        # Assicuriamoci che i dati siano nel formato corretto
+        if isinstance(batch_X, torch.Tensor):
+            batch_X = batch_X.numpy()
+        if isinstance(batch_y, torch.Tensor):
+            batch_y = batch_y.numpy()
+            
+        # Verifichiamo che i dati siano 2D
+        if batch_X.ndim == 1:
+            batch_X = batch_X.reshape(1, -1)
+        if batch_y.ndim == 1:
+            batch_y = batch_y.reshape(-1)
+            
+        X_list.append(batch_X)
+        y_list.append(batch_y)
     
-    X = np.concatenate(X)
-    y = np.concatenate(y)
+    # Concateniamo i batch mantenendo la dimensione corretta
+    X = np.vstack(X_list)  # Usa vstack per concatenare verticalmente le matrici
+    y = np.concatenate(y_list)  # Usa concatenate per i vettori 1D
+    
+    # Verifica finale delle dimensioni
+    if X.ndim != 2:
+        print(f"⚠️ Errore: X ha dimensione {X.ndim}, dovrebbe essere 2D")
+        return 1.0
+        
+    if y.ndim != 1:
+        print(f"⚠️ Errore: y ha dimensione {y.ndim}, dovrebbe essere 1D")
+        return 1.0
     
     # Calcola le metriche di qualità
     evaluator = DataQualityEvaluator(verbose=False)
-    metrics_vector, _ = evaluator.evaluate_dataset(X, y)
-    
-    # Calcola lo score finale pesato
-    score = 0.0
-    for metric_name, weight in weights.items():
-        metric_idx = results['metadata']['metric_names'].index(metric_name)
-        score += metrics_vector[metric_idx] * weight
-    
-    return float(score)
+    try:
+        metrics_vector, _ = evaluator.evaluate_dataset(X, y)
+        
+        # Calcola lo score finale pesato
+        score = 0.0
+        for metric_name, weight in weights.items():
+            metric_idx = results['metadata']['metric_names'].index(metric_name)
+            score += metrics_vector[metric_idx] * weight
+        
+        return float(score)
+    except Exception as e:
+        print(f"⚠️ Errore nel calcolo delle metriche di qualità: {str(e)}")
+        return 1.0  # In caso di errore, restituiamo un valore di default
 
 _current_client_model = None
 _global_model = None
